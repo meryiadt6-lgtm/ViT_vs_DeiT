@@ -1,0 +1,33 @@
+# =============================================================================
+# Vision Transformer & DeiT Learning Studio — Multi-Container Docker Setup
+# =============================================================================
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: vit-deit-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - VIT_MODEL_ID=google/vit-base-patch16-224
+      - DEIT_MODEL_ID=facebook/deit-base-distilled-patch16-224
+    volumes:
+      - ./backend:/app/backend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: vit-deit-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+

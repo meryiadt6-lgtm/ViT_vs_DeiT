@@ -1,0 +1,11 @@
+.venv/
+venv/
+node_modules/
+dist/
+build/
+__pycache__/
+*.pyc
+.env
+*.pt
+*.bin
+*.safetensors
