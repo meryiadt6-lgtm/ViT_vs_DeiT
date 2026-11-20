@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Calculator,
   ArrowRight,
@@ -7,68 +7,58 @@ import {
   XCircle,
   HelpCircle,
   RotateCcw,
-  BookOpen,
   Eye,
-  Sliders,
   Layers,
-  Zap,
-  Sparkles,
-  Grid,
-  Box,
-  TrendingUp,
   Award,
   Check,
   Cpu,
   Brain,
-  MousePointer2,
   Info,
+  GitBranch,
+  Zap,
+  BookOpen,
+  AlertCircle,
 } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
-import { InlineMath, BlockMath, TeX } from '../../components/MathFormula';
+import { InlineMath, BlockMath } from '../../components/MathFormula';
 import {
   calculatePatchStats,
+  getModeConfig,
+  getSeqLen,
   isClose,
   calculateLayerNorm,
   geluExact,
   calculateSoftmax,
+  calculateAttentionFixed,
+  getStep7References,
 } from './lab/mathEngine';
 import { PatchSizeOption, ValidationFeedback } from './lab/types';
 
-// Interactive Embedding Ribbon Component
-function EmbeddingRibbon({ patchSize }: { patchSize: number }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// EmbeddingRibbon
+// ─────────────────────────────────────────────────────────────────────────────
+function EmbeddingRibbon({ N, dModel }: { N: number; dModel: number }) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
-  const totalPatches = Math.floor(224 / patchSize) ** 2;
-  const dim = patchSize * patchSize * 3;
 
-  // Generate a pseudo-random color gradient for each embedding based on index
   const getBarColor = (i: number) => {
     const hue = (i * 37 + 200) % 360;
-    const isHovered = hoveredIdx === i;
-    const isSelected = selectedIdx === i;
-    if (isSelected) return `hsl(${hue}, 90%, 45%)`;
-    if (isHovered) return `hsl(${hue}, 80%, 55%)`;
+    if (selectedIdx === i) return `hsl(${hue}, 90%, 45%)`;
+    if (hoveredIdx === i) return `hsl(${hue}, 80%, 55%)`;
     return `hsl(${hue}, 60%, 65%)`;
   };
 
-  // Show up to 20 bars + "..." + last bar
-  const visibleBars = Math.min(20, totalPatches);
-  const showDots = totalPatches > 21;
+  const visibleBars = Math.min(16, N);
+  const showDots = N > 17;
 
   return (
     <div className="embed-ribbon-container">
       <div className="embed-ribbon-header">
         <span className="embed-ribbon-title">
-          Ruban de <strong>{totalPatches}</strong> vecteurs latents
-          <span className="embed-ribbon-dim-badge">dim = {dim}</span>
+          Ruban de <strong>{N}</strong> vecteurs latents
+          <span className="embed-ribbon-dim-badge">dim = {dModel}</span>
         </span>
-        <span className="embed-ribbon-hint">
-          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{display:'inline',marginRight:3}}>
-            <circle cx="6.5" cy="6.5" r="6" stroke="#6366f1" strokeWidth="1.2"/>
-            <text x="6.5" y="10" textAnchor="middle" fill="#6366f1" fontSize="8" fontWeight="bold">i</text>
-          </svg>
-          Survolez ou cliquez un patch
-        </span>
+        <span className="embed-ribbon-hint">Survolez ou cliquez un patch</span>
       </div>
 
       <div className="embed-ribbon-scroll">
@@ -80,139 +70,107 @@ function EmbeddingRibbon({ patchSize }: { patchSize: number }) {
             onMouseEnter={() => setHoveredIdx(i)}
             onMouseLeave={() => setHoveredIdx(null)}
             onClick={() => setSelectedIdx(selectedIdx === i ? null : i)}
-            title={`Patch #${i + 1} → vecteur ℝ^${dim}`}
+            title={`Patch #${i + 1} → vecteur ℝ^${dModel}`}
           />
         ))}
-        {showDots && (
-          <span className="embed-vbar-dots">···</span>
-        )}
-        {totalPatches > visibleBars && (
+        {showDots && <span className="embed-vbar-dots">···</span>}
+        {N > visibleBars && (
           <div
             key="last"
-            className={`embed-vbar ${selectedIdx === totalPatches - 1 ? 'selected' : ''}`}
-            style={{ background: getBarColor(totalPatches - 1) }}
-            onMouseEnter={() => setHoveredIdx(totalPatches - 1)}
+            className={`embed-vbar ${selectedIdx === N - 1 ? 'selected' : ''}`}
+            style={{ background: getBarColor(N - 1) }}
+            onMouseEnter={() => setHoveredIdx(N - 1)}
             onMouseLeave={() => setHoveredIdx(null)}
-            onClick={() => setSelectedIdx(selectedIdx === totalPatches - 1 ? null : totalPatches - 1)}
-            title={`Patch #${totalPatches} → vecteur ℝ^${dim}`}
+            onClick={() => setSelectedIdx(selectedIdx === N - 1 ? null : N - 1)}
+            title={`Patch #${N} → vecteur ℝ^${dModel}`}
           />
         )}
       </div>
 
-      {/* Detail card for selected/hovered patch */}
-      {(hoveredIdx !== null || selectedIdx !== null) && (
-        <div className="embed-detail-card">
-          {(() => {
-            const idx = hoveredIdx ?? selectedIdx!;
-            const row = Math.floor(idx / Math.floor(224 / patchSize)) + 1;
-            const col = (idx % Math.floor(224 / patchSize)) + 1;
-            return (
-              <>
-                <div className="embed-detail-header">
-                  <span className="embed-detail-pill">Patch #{idx + 1}</span>
-                  <span className="embed-detail-pos">Ligne {row}, Colonne {col}</span>
-                </div>
-                <div className="embed-detail-body">
-                  <div className="embed-detail-row">
-                    <span className="embed-detail-label">Entrée (aplatie)</span>
-                    <span className="embed-detail-val">
-                      <InlineMath math={`\\mathbf{x}_p \\in \\mathbb{R}^{${dim}}`} />
-                    </span>
-                  </div>
-                  <div className="embed-detail-arrow">
-                    <svg width="80" height="18" viewBox="0 0 80 18">
-                      <line x1="4" y1="9" x2="68" y2="9" stroke="#6366f1" strokeWidth="2" markerEnd="url(#arr)" />
-                      <defs>
-                        <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-                          <polygon points="0 0, 6 3, 0 6" fill="#6366f1" />
-                        </marker>
-                      </defs>
-                      <text x="22" y="7" fontSize="8" fill="#6366f1" fontWeight="600">E × xₚ + b</text>
-                    </svg>
-                  </div>
-                  <div className="embed-detail-row">
-                    <span className="embed-detail-label">Embedding (sortie)</span>
-                    <span className="embed-detail-val">
-                      <InlineMath math={`\\mathbf{z}_{${idx+1}} \\in \\mathbb{R}^{768}`} />
-                    </span>
-                  </div>
-                  <div className="embed-minibar-vis">
-                    {Array.from({ length: 16 }).map((_, j) => {
-                      const v = Math.abs(Math.sin((idx + 1) * 7.3 + j * 2.1));
-                      return (
-                        <div
-                          key={j}
-                          className="embed-minibar-cell"
-                          style={{ height: `${12 + v * 24}px`, opacity: 0.5 + v * 0.5 }}
-                          title={`dim ${j + 1}: ${v.toFixed(3)}`}
-                        />
-                      );
-                    })}
-                    <span className="embed-minibar-dots">···768</span>
-                  </div>
-                </div>
-              </>
-            );
-          })()}
-        </div>
-      )}
+      {(hoveredIdx !== null || selectedIdx !== null) && (() => {
+        const idx = hoveredIdx ?? selectedIdx!;
+        const gridW = Math.round(Math.sqrt(N));
+        const row = Math.floor(idx / gridW) + 1;
+        const col = (idx % gridW) + 1;
+        return (
+          <div className="embed-detail-card">
+            <div className="embed-detail-header">
+              <span className="embed-detail-pill">Patch #{idx + 1}</span>
+              <span className="embed-detail-pos">Ligne {row}, Col {col}</span>
+            </div>
+            <div className="embed-detail-body">
+              <div className="embed-detail-row">
+                <span className="embed-detail-label">Entrée (aplatie)</span>
+                <span className="embed-detail-val">
+                  <InlineMath math={`\\mathbf{x}_p \\in \\mathbb{R}^{${N <= 10 ? Math.round(Math.sqrt(N)) * Math.round(Math.sqrt(N)) * 3 : 768}}`} />
+                </span>
+              </div>
+              <div className="embed-detail-row">
+                <span className="embed-detail-label">Embedding (sortie)</span>
+                <span className="embed-detail-val">
+                  <InlineMath math={`\\mathbf{z}_{p,${idx+1}} \\in \\mathbb{R}^{${dModel}}`} />
+                </span>
+              </div>
+              <div className="embed-minibar-vis">
+                {Array.from({ length: 12 }).map((_, j) => {
+                  const v = Math.abs(Math.sin((idx + 1) * 7.3 + j * 2.1));
+                  return (
+                    <div
+                      key={j}
+                      className="embed-minibar-cell"
+                      style={{ height: `${12 + v * 24}px`, opacity: 0.5 + v * 0.5 }}
+                      title={`dim ${j + 1}: ~${v.toFixed(3)}`}
+                    />
+                  );
+                })}
+                <span className="embed-minibar-dots">···{dModel}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
-      {/* Summary stats */}
       <div className="embed-ribbon-stats">
-        <div className="embed-stat-box">
-          <span className="embed-stat-num">{totalPatches}</span>
-          <span className="embed-stat-lbl">patches</span>
-        </div>
-        <div className="embed-stat-box">
-          <span className="embed-stat-num">×</span>
-          <span className="embed-stat-lbl" />
-        </div>
-        <div className="embed-stat-box">
-          <span className="embed-stat-num">{dim}</span>
-          <span className="embed-stat-lbl">dim. entrée</span>
-        </div>
-        <div className="embed-stat-box">
-          <span className="embed-stat-num">→</span>
-          <span className="embed-stat-lbl" />
-        </div>
-        <div className="embed-stat-box blue">
-          <span className="embed-stat-num">{totalPatches}</span>
-          <span className="embed-stat-lbl">vecteurs</span>
-        </div>
-        <div className="embed-stat-box">
-          <span className="embed-stat-num">×</span>
-          <span className="embed-stat-lbl" />
-        </div>
-        <div className="embed-stat-box blue">
-          <span className="embed-stat-num">768</span>
-          <span className="embed-stat-lbl">dim. sortie</span>
-        </div>
+        <div className="embed-stat-box"><span className="embed-stat-num">{N}</span><span className="embed-stat-lbl">patches</span></div>
+        <div className="embed-stat-box"><span className="embed-stat-num">×</span><span className="embed-stat-lbl" /></div>
+        <div className="embed-stat-box blue"><span className="embed-stat-num">{dModel}</span><span className="embed-stat-lbl">dim. sortie</span></div>
       </div>
     </div>
   );
 }
 
-// Interactive Token Sequence Visualizer for Step 3
-function TokenSequenceVisualizer({ model, patchSize }: { model: 'vit' | 'deit'; patchSize: number }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// TokenSequenceVisualizer
+// ─────────────────────────────────────────────────────────────────────────────
+function TokenSequenceVisualizer({ model, N, dModel }: { model: 'vit' | 'deit'; N: number; dModel: number }) {
   const [hoveredTok, setHoveredTok] = useState<string | null>(null);
-  const totalPatches = Math.floor(224 / patchSize) ** 2;
-  const seqLen = model === 'deit' ? totalPatches + 2 : totalPatches + 1;
+  const seqLen = getSeqLen(N, model);
 
   const tokenDefs = [
-    { id: 'cls', label: '[CLS]', color: '#1e40af', bg: '#eff6ff', border: '#93c5fd',
-      desc: 'Token de classification. Son embedding final est utilisé pour la prédiction de classe par la tête MLP.' },
+    {
+      id: 'cls', label: '[CLS]', color: '#1e40af', bg: '#eff6ff', border: '#93c5fd',
+      desc: 'Token de classification. Son embedding appris est concaténé en tête de séquence. Après les L blocs encodeurs, son vecteur final est donné à la tête de classification.',
+    },
     ...(model === 'deit' ? [{
       id: 'dist', label: '[DIST]', color: '#6d28d9', bg: '#f5f3ff', border: '#c4b5fd',
-      desc: 'Token de distillation (DeiT uniquement). Il guide l\'apprentissage en imitant les sorties du modèle enseignant CNN.'
+      desc: 'Token de distillation (DeiT uniquement). Embedding appris séparé. Sa sortie finale est donnée à la tête de distillation qui imite le modèle enseignant CNN (RegNetY-16GF).',
     }] : []),
-    { id: 'p1', label: 'P₁', color: '#065f46', bg: '#ecfdf5', border: '#6ee7b7',
-      desc: `Premier patch embedding. Représentation vectorielle (ℝ^768) du patch en haut à gauche de l'image.` },
-    { id: 'p2', label: 'P₂', color: '#065f46', bg: '#ecfdf5', border: '#6ee7b7',
-      desc: 'Deuxième patch embedding (patch suivant dans la séquence de gauche à droite, haut en bas).' },
-    { id: 'dots', label: '···', color: '#64748b', bg: '#f8fafc', border: '#e2e8f0',
-      desc: `${totalPatches - 2} autres patch embeddings (P₃ à P${totalPatches - 1})` },
-    { id: `p${totalPatches}`, label: `P${totalPatches}`, color: '#065f46', bg: '#ecfdf5', border: '#6ee7b7',
-      desc: `Dernier patch embedding (patch en bas à droite). Total : ${totalPatches} patches.` },
+    {
+      id: 'p1', label: 'z_p¹', color: '#065f46', bg: '#ecfdf5', border: '#6ee7b7',
+      desc: `Premier patch embedding z_p¹ ∈ ℝ^${dModel}. Représentation vectorielle du patch en haut à gauche de l'image après projection linéaire.`,
+    },
+    {
+      id: 'p2', label: 'z_p²', color: '#065f46', bg: '#ecfdf5', border: '#6ee7b7',
+      desc: 'Deuxième patch embedding (patch suivant dans la séquence de gauche à droite, haut en bas).',
+    },
+    {
+      id: 'dots', label: '···', color: '#64748b', bg: '#f8fafc', border: '#e2e8f0',
+      desc: `${N - 2} autres patch embeddings (z_p³ à z_p^${N-1})`,
+    },
+    {
+      id: `pN`, label: `z_p^${N}`, color: '#065f46', bg: '#ecfdf5', border: '#6ee7b7',
+      desc: `Dernier patch embedding (patch en bas à droite). Total : ${N} patches + ${model === 'deit' ? 2 : 1} token(s) spéciaux = ${seqLen} tokens.`,
+    },
   ];
 
   return (
@@ -257,15 +215,15 @@ function TokenSequenceVisualizer({ model, patchSize }: { model: 'vit' | 'deit'; 
 
       <div className="tokseq-pos-add">
         <div className="tokseq-pos-row">
-          <span className="tokseq-pos-label">Embedding du token :</span>
+          <span className="tokseq-pos-label">Embedding du patch :</span>
           <span className="tokseq-vec-example">
-            <InlineMath math="\mathbf{E} = [0.5,\; -0.2,\; 1.0]" />
+            <InlineMath math="\mathbf{z}_p = [0.5,\; -0.2,\; 1.0]" />
           </span>
         </div>
         <div className="tokseq-pos-row">
           <span className="tokseq-pos-label">Encodage positionnel :</span>
           <span className="tokseq-vec-example">
-            <InlineMath math="\mathbf{E}_{\text{pos}} = [0.1,\; 0.4,\; -0.3]" />
+            <InlineMath math="\mathbf{e}_{\text{pos}} = [0.1,\; 0.4,\; -0.3]" />
           </span>
         </div>
         <div className="tokseq-pos-row result">
@@ -274,11 +232,193 @@ function TokenSequenceVisualizer({ model, patchSize }: { model: 'vit' | 'deit'; 
             <InlineMath math="\mathbf{Z} = [0.6,\; 0.2,\; 0.7]" />
           </span>
         </div>
+        <p style={{ fontSize: '11px', color: '#64748b', marginTop: '6px', lineHeight: 1.5 }}>
+          <strong>Note :</strong> <InlineMath math="\mathbf{E}_{\text{pos}}" /> contient {seqLen} lignes (une par token, y compris [CLS]{model === 'deit' ? ' et [DIST]' : ''}). Chaque token a sa propre position apprise.
+        </p>
       </div>
     </div>
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GELU SVG Chart (corrected: y-axis not inverted, slight dip near x≈−0.75)
+// ─────────────────────────────────────────────────────────────────────────────
+function GELUChart() {
+  // Generate GELU points from x=-3 to x=3
+  const pts: [number, number][] = [];
+  for (let xi = -3; xi <= 3; xi += 0.1) {
+    const c = Math.sqrt(2 / Math.PI);
+    const y = 0.5 * xi * (1 + Math.tanh(c * (xi + 0.044715 * xi * xi * xi)));
+    pts.push([xi, y]);
+  }
+
+  // SVG: viewBox x from -3 to 3, y from -0.5 to 3.2
+  // Map: svgX = (x+3) * 50, svgY = (3.2-y) * 50
+  const mapX = (x: number) => (x + 3) * 50;
+  const mapY = (y: number) => (3.2 - y) * 50;
+
+  const geluPath = pts.map(([x, y], i) =>
+    `${i === 0 ? 'M' : 'L'} ${mapX(x).toFixed(1)} ${mapY(y).toFixed(1)}`
+  ).join(' ');
+
+  // ReLU path: y=max(0,x)
+  const reluPath = `M ${mapX(-3)} ${mapY(0)} L ${mapX(0)} ${mapY(0)} L ${mapX(3)} ${mapY(3)}`;
+
+  const W = 300, H = 185;
+
+  // Axis origin
+  const ox = mapX(0), oy = mapY(0);
+
+  return (
+    <div className="gelu-graph-container">
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ overflow: 'visible' }}>
+        {/* Grid lines */}
+        {[-2, -1, 1, 2, 3].map(v => (
+          <line key={`vg${v}`} x1={mapX(v)} y1={0} x2={mapX(v)} y2={H} stroke="#f1f5f9" strokeWidth="1" />
+        ))}
+        {[-0.5, 0.5, 1, 1.5, 2, 2.5, 3].map(v => (
+          <line key={`hg${v}`} x1={0} y1={mapY(v)} x2={W} y2={mapY(v)} stroke="#f1f5f9" strokeWidth="1" />
+        ))}
+        {/* Axes */}
+        <line x1={0} y1={oy} x2={W} y2={oy} stroke="#94a3b8" strokeWidth="1.5" />
+        <line x1={ox} y1={0} x2={ox} y2={H} stroke="#94a3b8" strokeWidth="1.5" />
+        {/* Axis labels */}
+        {[-2, -1, 1, 2, 3].map(v => (
+          <text key={`xl${v}`} x={mapX(v)} y={oy + 14} textAnchor="middle" fontSize="9" fill="#94a3b8">{v}</text>
+        ))}
+        {[1, 2, 3].map(v => (
+          <text key={`yl${v}`} x={ox - 8} y={mapY(v) + 3} textAnchor="end" fontSize="9" fill="#94a3b8">{v}</text>
+        ))}
+        <text x={ox - 8} y={mapY(-0.17) + 3} textAnchor="end" fontSize="8" fill="#f59e0b">−0.17</text>
+        {/* ReLU dashed */}
+        <path d={reluPath} stroke="#94a3b8" strokeWidth="1.8" strokeDasharray="5 4" fill="none" opacity="0.7" />
+        {/* GELU solid */}
+        <path d={geluPath} stroke="#2563eb" strokeWidth="2.2" fill="none" />
+        {/* Annotation points */}
+        <circle cx={mapX(3)} cy={mapY(geluExact(3))} r="4" fill="#2563eb" />
+        <text x={mapX(3) - 5} y={mapY(geluExact(3)) - 7} fontSize="9" fill="#1d4ed8" textAnchor="middle">2.996</text>
+        <circle cx={mapX(-1)} cy={mapY(geluExact(-1))} r="4" fill="#ef4444" />
+        <text x={mapX(-1) + 24} y={mapY(geluExact(-1)) + 4} fontSize="9" fill="#dc2626">−0.159</text>
+        {/* Dip annotation near x=-0.75 */}
+        <circle cx={mapX(-0.75)} cy={mapY(geluExact(-0.75))} r="3" fill="#f59e0b" />
+        {/* Axis labels */}
+        <text x={W - 8} y={oy - 5} fontSize="10" fill="#64748b" fontWeight="600">x</text>
+        <text x={ox + 5} y={8} fontSize="10" fill="#64748b" fontWeight="600">y</text>
+      </svg>
+      <div className="graph-legend-row">
+        <span className="legend-gelu">— GELU (continue, creux ≈ −0.17 vers x≈−0.75)</span>
+        <span className="legend-relu">--- ReLU (brisée en 0)</span>
+      </div>
+    </div>
+  );
+}
+
+function geluExactLocal(x: number): number {
+  const c = Math.sqrt(2 / Math.PI);
+  return 0.5 * x * (1 + Math.tanh(c * (x + 0.044715 * x * x * x)));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EncoderBlockDiagram – visual synthesis after step 6
+// ─────────────────────────────────────────────────────────────────────────────
+function EncoderBlockDiagram() {
+  return (
+    <div className="encoder-block-diagram">
+      <div className="enc-block-title">Structure d'un bloc encodeur pré-LN (×12)</div>
+      <div className="enc-block-flow">
+        {/* Input */}
+        <div className="enc-node input-node">
+          <span>z<sub>ℓ-1</sub></span>
+        </div>
+        <div className="enc-arrow">↓</div>
+
+        {/* Residual branch 1 */}
+        <div className="enc-residual-group">
+          <div className="enc-residual-label">Résidu 1 : MHSA</div>
+          <div className="enc-block-row">
+            <div className="enc-node ln-node">LN<br/><span style={{fontSize:'9px'}}>Étape 4</span></div>
+            <span className="enc-mini-arrow">→</span>
+            <div className="enc-node attn-node">MSA<br/><span style={{fontSize:'9px'}}>Étape 5</span></div>
+          </div>
+          <div className="enc-residual-formula">
+            <InlineMath math="\mathbf{z}' = \text{MSA}(\text{LN}(\mathbf{z}_{\ell-1})) + \mathbf{z}_{\ell-1}" />
+          </div>
+        </div>
+        <div className="enc-arrow">↓</div>
+
+        {/* Residual branch 2 */}
+        <div className="enc-residual-group">
+          <div className="enc-residual-label">Résidu 2 : MLP</div>
+          <div className="enc-block-row">
+            <div className="enc-node ln-node">LN<br/><span style={{fontSize:'9px'}}>Étape 4</span></div>
+            <span className="enc-mini-arrow">→</span>
+            <div className="enc-node mlp-node">MLP<br/><span style={{fontSize:'9px'}}>Étape 6</span></div>
+          </div>
+          <div className="enc-residual-formula">
+            <InlineMath math="\mathbf{z}_{\ell} = \text{MLP}(\text{LN}(\mathbf{z}')) + \mathbf{z}'" />
+          </div>
+        </div>
+        <div className="enc-arrow">↓</div>
+
+        {/* Output */}
+        <div className="enc-node output-node">
+          <span>z<sub>ℓ</sub></span>
+        </div>
+
+        <div className="enc-repeat-badge">× L = 12</div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// End-to-End Pipeline – model-aware dual branches
+// ─────────────────────────────────────────────────────────────────────────────
+function PipelineRecap({ model }: { model: 'vit' | 'deit' }) {
+  const vitNodes = [
+    'Image 224×224×3',
+    '196 patches 16×16',
+    'Projection linéaire (768D)',
+    '[CLS] + 196 z_p + E_pos → 197 tokens',
+    '12 blocs pré-LN (LN→MSA→res→LN→MLP→res)',
+    'LN final sur token [CLS]',
+    'Tête linéaire 768→1000',
+    'Softmax → argmax → classe',
+  ];
+  const deitNodes = [
+    'Image 224×224×3',
+    '196 patches 16×16',
+    'Projection linéaire (768D)',
+    '[CLS] + [DIST] + 196 z_p + E_pos → 198 tokens',
+    '12 blocs pré-LN (LN→MSA→res→LN→MLP→res)',
+    'LN final sur [CLS] et [DIST]',
+    'Tête CLS (768→1000) + Tête DIST (768→1000)',
+    'Fusion : P_final = ½(P_cls + P_dist)',
+    'argmax P_final → classe',
+  ];
+  const nodes = model === 'deit' ? deitNodes : vitNodes;
+  const color = model === 'deit' ? '#6d28d9' : '#1e3a8a';
+
+  return (
+    <div className="pipeline-recap-vertical">
+      <div className="pipeline-model-badge" style={{ background: model === 'deit' ? '#f5f3ff' : '#eff6ff', color }}>
+        {model === 'vit' ? '🧠 ViT — Classification [CLS] uniquement' : '🤖 DeiT — Classification + Distillation [DIST]'}
+      </div>
+      {nodes.map((n, i) => (
+        <React.Fragment key={i}>
+          <div className={`recap-node ${i === nodes.length - 1 ? 'highlight' : ''}`} style={i === nodes.length - 1 ? { borderColor: color, color } : {}}>
+            {n}
+          </div>
+          {i < nodes.length - 1 && <div className="recap-arr">↓</div>}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN COMPONENT
+// ─────────────────────────────────────────────────────────────────────────────
 export function TheoreticalCalculations() {
   const {
     imageUrl,
@@ -298,176 +438,118 @@ export function TheoreticalCalculations() {
   const [hintLevels, setHintLevels] = useState<Record<number, number>>({});
   const [solutionVisible, setSolutionVisible] = useState<Record<number, boolean>>({});
 
-  // -------------------------------------------------------------
-  // STEP 1 STATE: Découpage
-  // -------------------------------------------------------------
+  // Derive config from diffLevel
+  const cfg = useMemo(() => getModeConfig(diffLevel as 'miniature' | 'real'), [diffLevel]);
+  const isReal = diffLevel === 'real';
+
+  // ── Step 1 ──
   const [step1PatchSize, setStep1PatchSize] = useState<PatchSizeOption>(16);
-  const [step1Inputs, setStep1Inputs] = useState({
-    gridRowsCols: '',
-    totalPatches: '',
-    flattenedDim: '',
-  });
+  const [step1Inputs, setStep1Inputs] = useState({ gridRowsCols: '', totalPatches: '', flattenedDim: '' });
   const [step1Feedback, setStep1Feedback] = useState<ValidationFeedback | null>(null);
 
-  // -------------------------------------------------------------
-  // STEP 2 STATE: Projection Linéaire & Matrix Mult
-  // -------------------------------------------------------------
-  const [step2Inputs, setStep2Inputs] = useState({
-    dimIn: '',
-    dimOut: '',
-    totalParams: '',
-    z1: '',
-    z2: '',
-  });
+  // ── Step 2 ──
+  const [step2Inputs, setStep2Inputs] = useState({ dimIn: '', dimOut: '', totalParams: '', z1: '', z2: '' });
   const [step2Feedback, setStep2Feedback] = useState<ValidationFeedback | null>(null);
 
-  // -------------------------------------------------------------
-  // STEP 3 STATE: Tokens & Position
-  // -------------------------------------------------------------
-  const [step3Inputs, setStep3Inputs] = useState({
-    seqLenViT: '',
-    seqLenDeiT: '',
-    tensorShapeBatch1: '',
-    zPos1: '',
-    zPos2: '',
-    zPos3: '',
-  });
+  // ── Step 3 ──
+  const [step3Inputs, setStep3Inputs] = useState({ seqLen: '', zPos1: '', zPos2: '', zPos3: '' });
   const [step3Feedback, setStep3Feedback] = useState<ValidationFeedback | null>(null);
 
-  // -------------------------------------------------------------
-  // STEP 4 STATE: Layer Normalization
-  // -------------------------------------------------------------
-  const [step4Inputs, setStep4Inputs] = useState({
-    mean: '',
-    variance: '',
-    stdDev: '',
-    xNorm1: '',
-    xNorm2: '',
-    xNorm3: '',
-    xNorm4: '',
-  });
+  // ── Step 4 ──
+  const [step4Inputs, setStep4Inputs] = useState({ mean: '', variance: '', stdDev: '', xNorm1: '', xNorm2: '', xNorm3: '', xNorm4: '' });
   const [step4Feedback, setStep4Feedback] = useState<ValidationFeedback | null>(null);
 
-  // -------------------------------------------------------------
-  // STEP 5 STATE: Multi-Head Self-Attention
-  // -------------------------------------------------------------
+  // ── Step 5 ──
   const [step5Inputs, setStep5Inputs] = useState({
-    kt11: '',
-    kt12: '',
-    kt21: '',
-    kt22: '',
-    qkt11: '',
-    qkt12: '',
-    s11: '',
-    s12: '',
-    a11: '',
-    a12: '',
+    kt11: '', kt12: '', kt21: '', kt22: '',
+    qkt11: '', qkt12: '', qkt21: '', qkt22: '',
+    s11: '', s12: '',
+    a11: '', a12: '',
   });
   const [step5Feedback, setStep5Feedback] = useState<ValidationFeedback | null>(null);
 
-  // -------------------------------------------------------------
-  // STEP 6 STATE: MLP & GELU
-  // -------------------------------------------------------------
-  const [step6Inputs, setStep6Inputs] = useState({
-    z1: '',
-    geluZ1: '',
-    geluZ2: '',
-    expansionFactor: '',
-    mlpDim: '',
-  });
+  // ── Step 6 ──
+  const [step6Inputs, setStep6Inputs] = useState({ expansionFactor: '', mlpDim: '', geluZ1: '', geluZ2: '' });
   const [step6Feedback, setStep6Feedback] = useState<ValidationFeedback | null>(null);
 
-  // -------------------------------------------------------------
-  // STEP 7 STATE: Classification & Distillation
-  // -------------------------------------------------------------
+  // ── Step 7 ──
   const [step7Inputs, setStep7Inputs] = useState({
-    exp1: '',
-    exp2: '',
-    exp3: '',
-    sumExp: '',
-    prob1: '',
-    winningClass: '',
-    pFinal1: '',
-    pFinal2: '',
-    pFinal3: '',
+    exp1: '', sumExp: '', prob1: '',
+    pFinalPaper1: '', pFinalPaper2: '', pFinalPaper3: '',
   });
   const [step7Feedback, setStep7Feedback] = useState<ValidationFeedback | null>(null);
 
   const stepsList = [
-    { id: 1, title: 'Découpage en patches' },
-    { id: 2, title: 'Projection linéaire' },
-    { id: 3, title: 'Tokens & positions' },
-    { id: 4, title: 'Layer Normalization' },
-    { id: 5, title: 'Attention (Q, K, V)' },
+    { id: 1, title: 'Découpage' },
+    { id: 2, title: 'Projection' },
+    { id: 3, title: 'Tokens & pos.' },
+    { id: 4, title: 'LayerNorm' },
+    { id: 5, title: 'Attention Q,K,V' },
     { id: 6, title: 'MLP & GELU' },
-    { id: 7, title: 'Classification & Distillation' },
+    { id: 7, title: 'Classification' },
   ];
 
-  // Helper validation
   const recordValidation = (stepId: number, isSuccess: boolean) => {
     registerAttempt();
-    if (isSuccess) {
-      validateTheoryStep(stepId, 15);
-    }
+    if (isSuccess) validateTheoryStep(stepId, 15);
   };
 
   const showNextHint = (stepId: number) => {
-    setHintLevels((prev) => ({
-      ...prev,
-      [stepId]: Math.min(3, (prev[stepId] || 0) + 1),
-    }));
+    setHintLevels(prev => ({ ...prev, [stepId]: Math.min(3, (prev[stepId] || 0) + 1) }));
   };
 
-  // -------------------------------------------------------------
+  // ── Reference computations ──
+  const patchStats = useMemo(() => {
+    if (isReal) return calculatePatchStats(224, 224, step1PatchSize, 3);
+    return calculatePatchStats(6, 6, 2, 3);
+  }, [isReal, step1PatchSize]);
+
+  const seqLenExpected = useMemo(
+    () => getSeqLen(isReal ? patchStats.totalPatches : 9, selectedModel as 'vit' | 'deit'),
+    [isReal, patchStats.totalPatches, selectedModel]
+  );
+
+  const lnRef = useMemo(() => calculateLayerNorm([1, 3, 3, 9]), []);
+  const attnRef = useMemo(() => calculateAttentionFixed(), []);
+  const step7Ref = useMemo(() => getStep7References(), []);
+
+  // ─────────────────────────────────────────────────────────────
   // VERIFICATIONS
-  // -------------------------------------------------------------
+  // ─────────────────────────────────────────────────────────────
   const verifyStep1 = () => {
-    // Calcul selon la taille de patch sélectionnée par l'utilisateur (image 224x224)
-    const H_real = 224;
-    const W_real = 224;
-    const P_real = step1PatchSize; // 8, 16 ou 32
-    const C = 3;
-    const statsReal = calculatePatchStats(H_real, W_real, P_real, C);
+    const stats = isReal
+      ? calculatePatchStats(224, 224, step1PatchSize, 3)
+      : calculatePatchStats(6, 6, 2, 3);
+    const H = isReal ? 224 : 6;
+    const P = isReal ? step1PatchSize : 2;
 
-    // Statistiques miniatures alternatives (au cas où l'utilisateur a résolu sur 6x6 avec P=2)
-    const statsMini = calculatePatchStats(6, 6, 2, C);
-
-    const okGridReal = isClose(step1Inputs.gridRowsCols, statsReal.gridRows, 0.1);
-    const okTotalReal = isClose(step1Inputs.totalPatches, statsReal.totalPatches, 0.1);
-    const okDimReal = isClose(step1Inputs.flattenedDim, statsReal.flattenedDim, 0.1);
-
-    const okGridMini = isClose(step1Inputs.gridRowsCols, statsMini.gridRows, 0.1);
-    const okTotalMini = isClose(step1Inputs.totalPatches, statsMini.totalPatches, 0.1);
-    const okDimMini = isClose(step1Inputs.flattenedDim, statsMini.flattenedDim, 0.1);
-
-    const isSuccess = (okGridReal && okTotalReal && okDimReal) || (okGridMini && okTotalMini && okDimMini);
+    const okGrid = isClose(step1Inputs.gridRowsCols, stats.gridRows, 0.1);
+    const okTotal = isClose(step1Inputs.totalPatches, stats.totalPatches, 0.1);
+    const okDim = isClose(step1Inputs.flattenedDim, stats.flattenedDim, 0.1);
+    const isSuccess = okGrid && okTotal && okDim;
     recordValidation(1, isSuccess);
 
     setStep1Feedback({
       isChecked: true,
       isCorrect: isSuccess,
       message: isSuccess
-        ? `Parfait ! Pour P = ${step1PatchSize}×${step1PatchSize}, vous obtenez bien ${statsReal.gridRows} patches par côté, N = ${statsReal.totalPatches} patches au total et D = ${statsReal.flattenedDim} valeurs par vecteur.`
-        : `Pour une image 224×224 avec P = ${step1PatchSize}×${step1PatchSize} : calculez H/P = 224/${step1PatchSize} = ${statsReal.gridRows}, N = (${statsReal.gridRows})² = ${statsReal.totalPatches}, et D = ${step1PatchSize}²×3 = ${statsReal.flattenedDim}.`,
+        ? `Parfait ! Pour une image ${H}×${H} avec P=${P} : ${stats.gridRows} patches par côté, N=${stats.totalPatches} patches au total, D_flat=${stats.flattenedDim} valeurs.`
+        : `Pour ${H}×${H} avec P=${P} : lignes/cols = ${H}/${P} = ${stats.gridRows}, N = ${stats.gridRows}² = ${stats.totalPatches}, D_flat = ${P}²×3 = ${stats.flattenedDim}.`,
     });
   };
 
   const verifyStep2 = () => {
-    // Accepter aussi bien la dimension réelle ViT (768, 768) que miniature (12, 4) ou basée sur le patch précédent
-    const okDin =
-      isClose(step2Inputs.dimIn, 768, 0.1) ||
-      isClose(step2Inputs.dimIn, 12, 0.1) ||
-      isClose(step2Inputs.dimIn, step1PatchSize * step1PatchSize * 3, 0.1);
+    // Dimensions selon mode
+    const expectedDin = isReal ? 768 : 12;
+    const expectedDout = isReal ? 768 : 4;
+    // Params = D_in × D_model + D_model (biais, implémentation HuggingFace)
+    const expectedParams = isReal ? 768 * 768 + 768 : 12 * 4 + 4;
 
-    const okDout =
-      isClose(step2Inputs.dimOut, 768, 0.1) ||
-      isClose(step2Inputs.dimOut, 4, 0.1);
-
-    // Mini test: x = [2, 1, 3], W = [[1, 0], [0, 2], [1, 1]], b = [1, -1]
-    // z = [2*1 + 1*0 + 3*1 + 1, 2*0 + 1*2 + 3*1 - 1] = [6, 4]
+    const okDin = isClose(step2Inputs.dimIn, expectedDin, 0.1);
+    const okDout = isClose(step2Inputs.dimOut, expectedDout, 0.1);
+    // Mini calc: x=[2,1,3], W=[[1,0],[0,2],[1,1]], b=[1,-1] → z=[6,4]
     const okZ1 = isClose(step2Inputs.z1, 6, 0.1);
     const okZ2 = isClose(step2Inputs.z2, 4, 0.1);
-
     const isSuccess = okDin && okDout && okZ1 && okZ2;
     recordValidation(2, isSuccess);
 
@@ -475,58 +557,40 @@ export function TheoreticalCalculations() {
       isChecked: true,
       isCorrect: isSuccess,
       message: isSuccess
-        ? "Bravo ! La projection linéaire z = xW + b transforme chaque patch aplati en un vecteur d'embedding."
-        : 'Vérifiez z₁ = 2(1) + 1(0) + 3(1) + 1 = 6, et z₂ = 2(0) + 1(2) + 3(1) - 1 = 4. D_in = 768 (ou 12 en miniature), D_model = 768 (ou 4 en miniature).',
+        ? `Bravo ! D_in=${expectedDin}, D_model=${expectedDout}. z₁ = 2(1)+1(0)+3(1)+1 = 6, z₂ = 2(0)+1(2)+3(1)−1 = 4.`
+        : `D_in = ${expectedDin}, D_model = ${expectedDout}. Exemple : z₁ = 2×1 + 1×0 + 3×1 + 1 = 6, z₂ = 2×0 + 1×2 + 3×1 − 1 = 4.`,
     });
   };
 
   const verifyStep3 = () => {
-    const isVit = selectedModel === 'vit';
-    const numPatches = diffLevel === 'miniature' ? 9 : 196;
-
-    // ViT attend N + 1 tokens (197 réels ou 10 miniatures)
-    const okViT = isClose(step3Inputs.seqLenViT, numPatches + 1, 0.1) || isClose(step3Inputs.seqLenViT, 197, 0.1) || isClose(step3Inputs.seqLenViT, 10, 0.1);
-    // DeiT attend N + 2 tokens (198 réels ou 11 miniatures avec [DIST])
-    const okDeiT = isClose(step3Inputs.seqLenDeiT, numPatches + 2, 0.1) || isClose(step3Inputs.seqLenDeiT, 198, 0.1) || isClose(step3Inputs.seqLenDeiT, 11, 0.1);
-
-    // Vector addition: E = [0.5, -0.2, 1.0], E_pos = [0.1, 0.4, -0.3] -> Z = [0.6, 0.2, 0.7]
-    const okZ1 = isClose(step3Inputs.zPos1, 0.6, 0.08);
-    const okZ2 = isClose(step3Inputs.zPos2, 0.2, 0.08);
-    const okZ3 = isClose(step3Inputs.zPos3, 0.7, 0.08);
-    const okPosAddition = okZ1 && okZ2 && okZ3;
-
-    // La validation s'adapte au modèle actif sélectionné !
-    const okActiveLength = isVit
-      ? (okViT || (step3Inputs.seqLenViT === '' && okDeiT))
-      : (okDeiT || (step3Inputs.seqLenDeiT === '' && okViT));
-
-    const isSuccess = okActiveLength && okPosAddition;
+    const expectedLen = seqLenExpected;
+    const okLen = isClose(step3Inputs.seqLen, expectedLen, 0.1);
+    // z_p=[0.5,−0.2,1.0] + e_pos=[0.1,0.4,−0.3] = [0.6, 0.2, 0.7]
+    const okZ1 = isClose(step3Inputs.zPos1, 0.6, 0.02);
+    const okZ2 = isClose(step3Inputs.zPos2, 0.2, 0.02);
+    const okZ3 = isClose(step3Inputs.zPos3, 0.7, 0.02);
+    const isSuccess = okLen && okZ1 && okZ2 && okZ3;
     recordValidation(3, isSuccess);
 
+    const N = isReal ? patchStats.totalPatches : 9;
     setStep3Feedback({
       isChecked: true,
       isCorrect: isSuccess,
       message: isSuccess
-        ? (isVit
-            ? "Parfait ! En mode ViT, la séquence compte exactement N + 1 = 197 tokens (aucun token [DIST]). L'addition positionnelle Z = E + E_pos est correcte."
-            : "Bravo ! En mode DeiT, la séquence compte N + 2 = 198 tokens grâce à l'insertion du token [DIST]. L'addition positionnelle Z = E + E_pos est exacte.")
-        : (isVit
-            ? `Pour ViT (${numPatches} patches) : Longueur = ${numPatches} + 1 ([CLS]) = ${numPatches + 1} tokens. Z = [0.5+0.1, -0.2+0.4, 1.0-0.3] = [0.6, 0.2, 0.7].`
-            : `Pour DeiT (${numPatches} patches) : Longueur = ${numPatches} + 2 ([CLS] + [DIST]) = ${numPatches + 2} tokens. Z = [0.6, 0.2, 0.7].`),
+        ? `Parfait ! ${selectedModel === 'vit' ? `ViT : N+1 = ${N}+1 = ${expectedLen} tokens` : `DeiT : N+2 = ${N}+2 = ${expectedLen} tokens`}. z_p + e_pos = [0.6, 0.2, 0.7].`
+        : `${selectedModel === 'vit' ? `ViT : longueur = ${N}+1 = ${expectedLen}` : `DeiT : longueur = ${N}+2 = ${expectedLen}`}. z_p=[0.5,−0.2,1.0] + e_pos=[0.1,0.4,−0.3] = [0.6, 0.2, 0.7].`,
     });
   };
 
   const verifyStep4 = () => {
-    // Vector: [1.0, 3.0, 3.0, 9.0] -> mean = 4.0, var = 9.0, std = 3.0
-    // normalized = [-1.0, -0.333, -0.333, 1.667]
-    const okMean = isClose(step4Inputs.mean, 4.0, 0.15);
-    const okVar = isClose(step4Inputs.variance, 9.0, 0.25);
-    const okStd = isClose(step4Inputs.stdDev, 3.0, 0.15);
-    const okN1 = isClose(step4Inputs.xNorm1, -1.0, 0.15);
-    const okN2 = isClose(step4Inputs.xNorm2, -0.333, 0.15);
-    const okN3 = isClose(step4Inputs.xNorm3, -0.333, 0.15);
-    const okN4 = isClose(step4Inputs.xNorm4, 1.667, 0.15);
-
+    // [1,3,3,9] : μ=4, σ²=9, σ=3, x̂=[−1, −0.333, −0.333, 1.667]
+    const okMean = isClose(step4Inputs.mean, 4.0, 0.01);
+    const okVar = isClose(step4Inputs.variance, 9.0, 0.01);
+    const okStd = isClose(step4Inputs.stdDev, 3.0, 0.01);
+    const okN1 = isClose(step4Inputs.xNorm1, -1.0, 0.01);
+    const okN2 = isClose(step4Inputs.xNorm2, -0.333, 0.01);
+    const okN3 = isClose(step4Inputs.xNorm3, -0.333, 0.01);
+    const okN4 = isClose(step4Inputs.xNorm4, 1.667, 0.01);
     const isSuccess = okMean && okVar && okStd && okN1 && okN2 && okN3 && okN4;
     recordValidation(4, isSuccess);
 
@@ -534,98 +598,104 @@ export function TheoreticalCalculations() {
       isChecked: true,
       isCorrect: isSuccess,
       message: isSuccess
-        ? 'Superbe ! Layer Normalization stabilise la variance et centre les activations sur chaque token.'
-        : 'Rappel : μ = (1+3+3+9)/4 = 4.0, σ² = ((1-4)² + (3-4)² + (3-4)² + (9-4)²)/4 = (9+1+1+25)/4 = 36/4 = 9.0, σ = 3.0. Normalisés : [-1.0, -0.33, -0.33, 1.67].',
+        ? 'Superbe ! μ=4, σ²=9, σ=3. x̂=[−1.000, −0.333, −0.333, 1.667]. Layer Normalization stabilise les gradients.'
+        : 'μ=(1+3+3+9)/4=4, σ²=((1−4)²+(3−4)²+(3−4)²+(9−4)²)/4=36/4=9, σ=3. x̂₁=(1−4)/3=−1.000, x̂₄=(9−4)/3=1.667.',
     });
   };
 
   const verifyStep5 = () => {
-    // Q = [[2, 0], [1, 1]], K = [[1, 1], [0, 2]]
-    // KT = [[1, 0], [1, 2]]
-    // QKT = [[2, 0], [2, 2]]
-    // Scale by sqrt(4) = 2 -> S11 = 1.0, S12 = 0.0
-    // Softmax row 1: e^1 / (e^1 + e^0) = 2.718 / 3.718 ≈ 0.731
-    const okKt =
-      isClose(step5Inputs.kt11, 1, 0.15) &&
-      isClose(step5Inputs.kt12, 0, 0.15) &&
-      isClose(step5Inputs.kt21, 1, 0.15) &&
-      isClose(step5Inputs.kt22, 2, 0.15);
+    // Corrected: Q=[[2,0,1,0],[1,1,0,1]], K=[[1,1,0,0],[0,2,1,0]], dk=4
+    // KT cols: [1,0],[1,2],[0,1],[0,0]  → 4×2 matrix
+    // KT[0]=[1,0], KT[1]=[1,2], KT[2]=[0,1], KT[3]=[0,0]
+    // But we show 2×2 of KT for user: the first 2 rows
+    // QKT = [[2,1],[2,2]]
+    // S = [[1, 0.5],[1, 1]]
+    // A row0 = softmax([1, 0.5]) ≈ [0.622, 0.378]
+    // A row1 = softmax([1, 1]) = [0.5, 0.5]
+    const ref = attnRef;
 
-    const okQkt = isClose(step5Inputs.qkt11, 2, 0.15) && isClose(step5Inputs.qkt12, 0, 0.15);
-    const okS = isClose(step5Inputs.s11, 1.0, 0.15) && isClose(step5Inputs.s12, 0.0, 0.15);
-    const okA = isClose(step5Inputs.a11, 0.73, 0.1) && isClose(step5Inputs.a12, 0.27, 0.1);
+    // We ask user for QKT (first row only for simplicity), S row1, A row1
+    const okQkt11 = isClose(step5Inputs.qkt11, ref.QKT[0][0], 0.1);
+    const okQkt12 = isClose(step5Inputs.qkt12, ref.QKT[0][1], 0.1);
+    const okS11 = isClose(step5Inputs.s11, ref.S[0][0], 0.01);
+    const okS12 = isClose(step5Inputs.s12, ref.S[0][1], 0.01);
+    const okA11 = isClose(step5Inputs.a11, ref.A[0][0], 0.01);
+    const okA12 = isClose(step5Inputs.a12, ref.A[0][1], 0.01);
 
-    const isSuccess = okKt && okQkt && okS && okA;
+    const isSuccess = okQkt11 && okQkt12 && okS11 && okS12 && okA11 && okA12;
     recordValidation(5, isSuccess);
 
     setStep5Feedback({
       isChecked: true,
       isCorrect: isSuccess,
       message: isSuccess
-        ? "Impressionnant ! Vous avez calculé le produit scalaire QKᵀ, l'échelle √d_k et le Softmax ligne par ligne."
-        : 'Attention : Kᵀ = [[1, 0], [1, 2]], QKᵀ = [[2, 0], [2, 2]], échelle (/2) = [[1, 0], ...], Softmax : a₁₁ ≈ 0.73, a₁₂ ≈ 0.27.',
+        ? `Impressionnant ! QKᵀ[1,:]=[${ref.QKT[0].join(', ')}], S[1,:]=[${ref.S[0].map(v=>v.toFixed(3)).join(', ')}], A[1,:]=[${ref.A[0].map(v=>v.toFixed(3)).join(', ')}].`
+        : `QKᵀ = Q·Kᵀ : ligne 1 = [2×1+0×1+1×0+0×0, 2×0+0×2+1×1+0×0] = [${ref.QKT[0].join(', ')}]. S = QKᵀ/√4 = [${ref.S[0].map(v=>v.toFixed(3)).join(', ')}]. Softmax → A=[${ref.A[0].map(v=>v.toFixed(3)).join(', ')}].`,
     });
   };
 
   const verifyStep6 = () => {
-    // x = [2, -1], W1 = [[1], [-1]], b = 0 -> z1 = 2(1) + (-1)(-1) = 3.0
-    // GELU(3.0) ≈ 2.996
-    // GELU(-1.0) ≈ -0.159
-    const okZ1 = isClose(step6Inputs.z1, 3.0, 0.15);
-    const okGelu1 = isClose(step6Inputs.geluZ1, 2.996, 0.15) || isClose(step6Inputs.geluZ1, 3.0, 0.1);
-    const okGelu2 = isClose(step6Inputs.geluZ2, -0.159, 0.1) || isClose(step6Inputs.geluZ2, -0.16, 0.08);
-    const okExp = isClose(step6Inputs.expansionFactor, 4, 0.15);
-    const okMlp = isClose(step6Inputs.mlpDim, 3072, 10) || isClose(step6Inputs.mlpDim, 16, 2);
-
-    const isSuccess = okZ1 && okGelu1 && okGelu2 && okExp && okMlp;
+    // Facteur expansion = 4, D_MLP = 4×768=3072 (réel) ou 4×4=16 (mini)
+    const expectedMlpDim = isReal ? 3072 : 16;
+    const okExp = isClose(step6Inputs.expansionFactor, 4, 0.1);
+    const okMlp = isClose(step6Inputs.mlpDim, expectedMlpDim, isReal ? 10 : 1);
+    const okGelu1 = isClose(step6Inputs.geluZ1, 2.996, 0.01) || isClose(step6Inputs.geluZ1, 3.0, 0.01);
+    const okGelu2 = isClose(step6Inputs.geluZ2, -0.159, 0.01) || isClose(step6Inputs.geluZ2, -0.158, 0.01);
+    const isSuccess = okExp && okMlp && okGelu1 && okGelu2;
     recordValidation(6, isSuccess);
 
     setStep6Feedback({
       isChecked: true,
       isCorrect: isSuccess,
       message: isSuccess
-        ? "Bravo ! Vous comprenez l'activation continue GELU et l'expansion dimensionnelle 4×D = 3072."
-        : 'Vérifiez z₁ = 2(1) + (-1)(-1) = 3.0. GELU(3.0) ≈ 2.996, GELU(-1.0) ≈ -0.159. Facteur = 4, D_MLP = 4×768 = 3072.',
+        ? `Bravo ! Facteur=4, D_MLP=4×${isReal ? 768 : 4}=${expectedMlpDim}. GELU(3.0)≈2.996, GELU(−1.0)≈−0.159.`
+        : `Facteur=4, D_MLP=4×${isReal ? 768 : 4}=${expectedMlpDim}. GELU(3.0)=0.5×3×(1+tanh(√(2/π)×(3+0.044715×27)))≈2.996. GELU(−1.0)≈−0.159.`,
     });
   };
 
   const verifyStep7 = () => {
-    const isDeit = selectedModel === 'deit';
-    // Logits: [2.0, 1.0, 0.0] -> sum exp = 7.389 + 2.718 + 1.0 = 11.107 -> prob1 = 0.665
-    const okExp1 = isClose(step7Inputs.exp1, 7.389, 0.2);
-    const okSum = isClose(step7Inputs.sumExp, 11.107, 0.35);
-    const okP1 = isClose(step7Inputs.prob1, 0.665, 0.08);
-    const okWin = isClose(step7Inputs.winningClass, 1, 0.1) || isClose(step7Inputs.winningClass, 0, 0.1);
+    const ref = step7Ref;
+    // ViT: z_cls=[2,1,0], exp(2)=7.389, sum=11.107, P1=0.665
+    const okExp1 = isClose(step7Inputs.exp1, ref.softmaxCls.exps[0], 0.01); // 7.389
+    const okSum = isClose(step7Inputs.sumExp, ref.softmaxCls.sumExp, 0.01);  // 11.107
+    const okP1 = isClose(step7Inputs.prob1, ref.softmaxCls.probs[0], 0.01); // 0.665
 
-    // Pour DeiT : fusion des 2 têtes 0.5 * (P_cls + P_dist) -> [0.70, 0.225, 0.075]
-    const okPf1 = isClose(step7Inputs.pFinal1, 0.7, 0.08);
-    const okPf2 = isClose(step7Inputs.pFinal2, 0.225, 0.08);
-
-    const isSuccess = isDeit
-      ? (okExp1 && okSum && okP1 && okPf1 && okPf2)
-      : (okExp1 && okSum && okP1);
-
-    recordValidation(7, isSuccess);
-
-    setStep7Feedback({
-      isChecked: true,
-      isCorrect: isSuccess,
-      message: isSuccess
-        ? (isDeit
-            ? "Félicitations ! Pour DeiT, les probabilités des têtes [CLS] et [DIST] sont fusionnées : P_final₁ = (0.60 + 0.80)/2 = 0.70, P_final₂ = 0.225. L'apprentissage guidé par l'enseignant CNN est validé !"
-            : "Bravo ! Pour ViT, la classification finale repose uniquement sur le vecteur [CLS] : P(y=1) ≈ 66.5% (classe prédite = 1). Aucun mécanisme de distillation n'intervient dans l'architecture originale.")
-        : (isDeit
-            ? "Pour DeiT : calculez exp(2.0) ≈ 7.389, Somme ≈ 11.107, P₁ ≈ 0.665, puis la moyenne des deux têtes : P_final₁ = (0.60 + 0.80)/2 = 0.70."
-            : "Pour ViT : calculez exp(2.0) ≈ 7.389, Somme ≈ 11.107, et la probabilité Softmax P(y=1) = 7.389 / 11.107 ≈ 0.665 (66.5%)."),
-    });
+    if (selectedModel === 'vit') {
+      const isSuccess = okExp1 && okSum && okP1;
+      recordValidation(7, isSuccess);
+      setStep7Feedback({
+        isChecked: true,
+        isCorrect: isSuccess,
+        message: isSuccess
+          ? 'Bravo ! exp(2.0)=7.389, somme=11.107, P(classe 1)=7.389/11.107≈0.665. Classe prédite = 1.'
+          : `exp(2.0)=e²≈${ref.softmaxCls.exps[0].toFixed(3)}, somme=e²+e¹+e⁰≈${ref.softmaxCls.sumExp.toFixed(3)}, P₁=7.389/11.107≈${ref.softmaxCls.probs[0].toFixed(3)}.`,
+      });
+    } else {
+      // DeiT: also check paper fusion
+      const okPf1 = isClose(step7Inputs.pFinalPaper1, ref.pFinalPaper[0], 0.01);
+      const okPf2 = isClose(step7Inputs.pFinalPaper2, ref.pFinalPaper[1], 0.01);
+      const okPf3 = isClose(step7Inputs.pFinalPaper3, ref.pFinalPaper[2], 0.01);
+      const isSuccess = okExp1 && okSum && okP1 && okPf1 && okPf2 && okPf3;
+      recordValidation(7, isSuccess);
+      setStep7Feedback({
+        isChecked: true,
+        isCorrect: isSuccess,
+        message: isSuccess
+          ? `Félicitations ! Fusion papier : P_final=[${ref.pFinalPaper.map(v=>v.toFixed(3)).join(', ')}] → classe ${ref.winnerPaper} gagne (les têtes étaient en désaccord, la fusion tranche).`
+          : `P_cls≈[${ref.softmaxCls.probs.map(v=>v.toFixed(3)).join(', ')}], P_dist≈[${ref.softmaxDist.probs.map(v=>v.toFixed(3)).join(', ')}]. Fusion : ½(P_cls+P_dist)=[${ref.pFinalPaper.map(v=>v.toFixed(3)).join(', ')}] → classe ${ref.winnerPaper}.`,
+      });
+    }
   };
 
   const completedCount = Object.keys(validatedTheorySteps).length;
   const progressPct = Math.round((completedCount / 7) * 100);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="unified-page-container">
-      {/* 1. HERO BANNER */}
+      {/* ── HERO BANNER ── */}
       <div className="unified-banner-card">
         <div className="banner-left-content">
           <div className="banner-icon-box">
@@ -634,20 +704,21 @@ export function TheoreticalCalculations() {
           <div className="banner-titles">
             <h1 className="banner-title">Laboratoire théorique : de l'image à la classification</h1>
             <p className="banner-subtitle">
-              Réalisez vous-même les calculs mathématiques d'un Vision Transformer et d'un DeiT • Formules KaTeX &amp; tolérance numérique
+              Réalisez vous-même les calculs mathématiques d'un Vision Transformer et d'un DeiT • Tolérance ±0,01
             </p>
           </div>
         </div>
 
-        {/* Global Selectors: Model & Level */}
+        {/* Global Selectors */}
         <div className="banner-controls-group">
+          {/* Model Toggle */}
           <div className="control-pill-toggle">
-            <span className="pill-toggle-label">Architecture active :</span>
+            <span className="pill-toggle-label">Architecture :</span>
             <button
               type="button"
               className={`pill-toggle-btn vit-btn ${selectedModel === 'vit' ? 'active' : ''}`}
               onClick={() => setSelectedModel('vit')}
-              title="Architecture Google ViT standard"
+              title="Architecture Google ViT — 197 tokens"
             >
               <Brain size={15} />
               <span>ViT</span>
@@ -657,7 +728,7 @@ export function TheoreticalCalculations() {
               type="button"
               className={`pill-toggle-btn deit-btn ${selectedModel === 'deit' ? 'active' : ''}`}
               onClick={() => setSelectedModel('deit')}
-              title="Architecture Meta DeiT avec Distillation"
+              title="Architecture Meta DeiT — 198 tokens + distillation"
             >
               <Cpu size={15} />
               <span>DeiT</span>
@@ -665,40 +736,72 @@ export function TheoreticalCalculations() {
             </button>
           </div>
 
+          {/* Mode Toggle */}
           <div className="control-pill-toggle">
-            <span className="pill-toggle-label">Échelle des données :</span>
-            <button
-              type="button"
-              className={`pill-toggle-btn scale-btn ${diffLevel === 'real' ? 'active' : ''}`}
-              onClick={() => setDiffLevel('real')}
-              title="Dimensions réelles ViT-Base (224×224, 196 patches, D=768)"
-            >
-              <span>Dimensions réelles</span>
-            </button>
+            <span className="pill-toggle-label">Mode :</span>
             <button
               type="button"
               className={`pill-toggle-btn scale-btn ${diffLevel === 'miniature' ? 'active' : ''}`}
               onClick={() => setDiffLevel('miniature')}
-              title="Matrices réduites idéales pour calcul mental rapide"
+              title="6×6, P=2, N=9, D_model=4 — calcul mental rapide"
             >
-              <span>Miniature (pédagogique)</span>
+              <span>Miniature</span>
+            </button>
+            <button
+              type="button"
+              className={`pill-toggle-btn scale-btn ${diffLevel === 'real' ? 'active' : ''}`}
+              onClick={() => setDiffLevel('real')}
+              title="224×224, P=16, N=196, D=768 — dimensions réelles ViT-Base"
+            >
+              <span>Réel</span>
             </button>
           </div>
 
-          <div className={`active-model-status-chip ${selectedModel === 'deit' ? 'deit' : 'vit'}`}>
-            <span className="chip-badge">{selectedModel === 'deit' ? 'Modèle DeiT sélectionné' : 'Modèle ViT sélectionné'}</span>
+          {/* Status chip */}
+          <div className={`active-model-status-chip ${selectedModel}`}>
+            <span className="chip-badge">
+              {selectedModel === 'deit' ? 'DeiT' : 'ViT'} — {diffLevel === 'miniature' ? 'Miniature' : 'Réel'}
+            </span>
             <span className="chip-desc">
-              {selectedModel === 'deit' ? 'Token [DIST] + Distillation CNN' : 'Classification supervisée [CLS]'}
+              {diffLevel === 'miniature'
+                ? `6×6, P=2, N=9, D=${selectedModel === 'vit' ? 10 : 11} tokens`
+                : `224×224, P=${step1PatchSize}, N=${patchStats.totalPatches}, ${seqLenExpected} tokens`}
             </span>
           </div>
         </div>
       </div>
 
-      {/* 2. PROGRESSION & STATS BAR */}
+      {/* ── Miniature / Réel INFO BAR ── */}
+      <div className="mode-info-banner" style={{
+        background: diffLevel === 'miniature' ? '#fefce8' : '#eff6ff',
+        border: `1px solid ${diffLevel === 'miniature' ? '#fde68a' : '#bfdbfe'}`,
+        borderRadius: '10px',
+        padding: '10px 18px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        fontSize: '12.5px',
+        color: diffLevel === 'miniature' ? '#78350f' : '#1e40af',
+      }}>
+        <Info size={16} />
+        {diffLevel === 'miniature' ? (
+          <span>
+            <strong>Mode Miniature :</strong> Image 6×6, P=2, C=3 → <strong>9 patches</strong>, D_in=12, D_model=4.
+            Séquence ViT = <strong>10 tokens</strong>, DeiT = <strong>11 tokens</strong>. Idéal pour le calcul mental.
+          </span>
+        ) : (
+          <span>
+            <strong>Mode Réel :</strong> Image 224×224, P={step1PatchSize}, C=3 → <strong>{patchStats.totalPatches} patches</strong>, D_in={patchStats.flattenedDim}, D_model=768.
+            Séquence ViT = <strong>{getSeqLen(patchStats.totalPatches, 'vit')} tokens</strong>, DeiT = <strong>{getSeqLen(patchStats.totalPatches, 'deit')} tokens</strong>. Dimensions réelles ViT-Base.
+          </span>
+        )}
+      </div>
+
+      {/* ── PROGRESS BAR ── */}
       <div className="lab-progress-bar-card">
         <div className="lab-stats-left">
           <div className="lab-stat-item">
-            <span className="stat-label">Progression du laboratoire :</span>
+            <span className="stat-label">Progression :</span>
             <div className="stat-progress-pill">
               <div className="stat-track">
                 <div className="stat-fill" style={{ width: `${progressPct}%` }} />
@@ -706,37 +809,21 @@ export function TheoreticalCalculations() {
               <span className="stat-pct-num">{completedCount} / 7 étapes ({progressPct}%)</span>
             </div>
           </div>
-
           <div className="lab-stat-item">
-            <span className="stat-label">Score global :</span>
-            <span className="score-badge">
-              <Award size={14} />
-              <b>{score} / 100 pts</b>
-            </span>
+            <span className="stat-label">Score :</span>
+            <span className="score-badge"><Award size={14} /><b>{score} / 100 pts</b></span>
           </div>
-
           <div className="lab-stat-item">
             <span className="stat-label">Tentatives :</span>
             <span className="attempts-badge">{attempts}</span>
           </div>
         </div>
-
-        <button
-          type="button"
-          className="btn-reset-lab"
-          onClick={() => {
-            if (window.confirm('Voulez-vous réinitialiser vos scores et recommencer ?')) {
-              resetAllProgress();
-            }
-          }}
-          title="Réinitialiser le laboratoire"
-        >
-          <RotateCcw size={14} />
-          <span>Réinitialiser</span>
+        <button type="button" className="btn-reset-lab" onClick={() => { if (window.confirm('Réinitialiser ?')) resetAllProgress(); }}>
+          <RotateCcw size={14} /><span>Réinitialiser</span>
         </button>
       </div>
 
-      {/* 3. STEPPER EN 7 ÉTAPES */}
+      {/* ── STEPPER ── */}
       <div className="math-stepper-container">
         <div className="math-stepper-track">
           {stepsList.map((st, idx) => {
@@ -763,19 +850,20 @@ export function TheoreticalCalculations() {
         </div>
       </div>
 
-      {/* 4. CONTENU DE L'ÉTAPE ACTIVE */}
+      {/* ── EXERCISE CARD ── */}
       <div className="lab-exercise-card">
-        {/* ============================================================== */}
-        {/* ÉTAPE 1 : DÉCOUPAGE EN PATCHES                                  */}
-        {/* ============================================================== */}
+
+        {/* ══════════════════════════════════════════════════════════════════
+            ÉTAPE 1 — DÉCOUPAGE EN PATCHES (commune ViT & DeiT)
+        ══════════════════════════════════════════════════════════════════ */}
         {currentStep === 1 && (
           <div className="lab-step-view">
             <div className="step-objective-banner">
-              <span className="step-kicker">ÉTAPE 01 / 07</span>
-              <h3>Objectif : Calculer le découpage d'une image en patches et la taille aplatie</h3>
+              <span className="step-kicker">ÉTAPE 01 / 07 — commune à ViT et DeiT</span>
+              <h3>Découpage d'une image en patches et calcul des dimensions</h3>
               <p>
-                Une image 2D <InlineMath math="\mathbf{X} \in \mathbb{R}^{H \times W \times C}" /> est découpée en une
-                grille régulière de <InlineMath math="N" /> patches carrés de côté <InlineMath math="P" />.
+                Une image <InlineMath math="\mathbf{X} \in \mathbb{R}^{H \times W \times C}" /> est découpée
+                en une grille régulière de patches carrés de côté <InlineMath math="P" />.
               </p>
             </div>
 
@@ -783,27 +871,39 @@ export function TheoreticalCalculations() {
               <div className="lab-panel-box">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">1</span>
-                  <span className="panel-header-title">Formules Mathématiques (KaTeX)</span>
+                  <span className="panel-header-title">Formules & Exercice</span>
                 </div>
 
                 <div className="formula-callout-box">
-                  <BlockMath math="N = \frac{H \times W}{P^2} = \left(\frac{H}{P}\right) \times \left(\frac{W}{P}\right),\quad D_{\text{flat}} = P^2 \times C" />
+                  <BlockMath math="N = \frac{H \times W}{P^2} = \frac{H}{P} \times \frac{W}{P}, \qquad D_{\text{flat}} = P^2 \times C" />
                 </div>
 
-                <div className="param-selector-row">
-                  <span className="selector-label">Taille du patch <InlineMath math="P" /> :</span>
-                  <div className="patch-size-btn-group">
-                    {([8, 16, 32] as PatchSizeOption[]).map((p) => (
-                      <button
-                        key={p}
-                        type="button"
-                        className={`btn-patch-opt ${step1PatchSize === p ? 'active' : ''}`}
-                        onClick={() => setStep1PatchSize(p)}
-                      >
-                        {p} × {p}
-                      </button>
-                    ))}
+                {/* Patch size selector — only in real mode */}
+                {isReal && (
+                  <div className="param-selector-row">
+                    <span className="selector-label">Taille du patch <InlineMath math="P" /> :</span>
+                    <div className="patch-size-btn-group">
+                      {([8, 16, 32] as PatchSizeOption[]).map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          className={`btn-patch-opt ${step1PatchSize === p ? 'active' : ''}`}
+                          onClick={() => setStep1PatchSize(p)}
+                        >
+                          {p}×{p}
+                        </button>
+                      ))}
+                    </div>
                   </div>
+                )}
+
+                {/* Données */}
+                <div className="context-data-box">
+                  {isReal ? (
+                    <span>Données : <InlineMath math={`H=${224},\\; W=${224},\\; P=${step1PatchSize},\\; C=3`} /></span>
+                  ) : (
+                    <span>Données (Miniature) : <InlineMath math="H=6,\; W=6,\; P=2,\; C=3" /></span>
+                  )}
                 </div>
 
                 <div className="exercise-inputs-grid">
@@ -814,10 +914,9 @@ export function TheoreticalCalculations() {
                       className="styled-lab-input"
                       value={step1Inputs.gridRowsCols}
                       onChange={(e) => setStep1Inputs({ ...step1Inputs, gridRowsCols: e.target.value })}
-                      placeholder="Ex: 14"
+                      placeholder="Entrez un nombre"
                     />
                   </div>
-
                   <div className="input-field-card">
                     <label>2. Nombre total de patches (<InlineMath math="N" />) :</label>
                     <input
@@ -825,10 +924,9 @@ export function TheoreticalCalculations() {
                       className="styled-lab-input"
                       value={step1Inputs.totalPatches}
                       onChange={(e) => setStep1Inputs({ ...step1Inputs, totalPatches: e.target.value })}
-                      placeholder="Ex: 196"
+                      placeholder="Entrez un nombre"
                     />
                   </div>
-
                   <div className="input-field-card">
                     <label>3. Dimension du vecteur aplati (<InlineMath math="D_{\text{flat}} = P^2 \times C" />) :</label>
                     <div className="input-with-unit">
@@ -837,7 +935,7 @@ export function TheoreticalCalculations() {
                         className="styled-lab-input"
                         value={step1Inputs.flattenedDim}
                         onChange={(e) => setStep1Inputs({ ...step1Inputs, flattenedDim: e.target.value })}
-                        placeholder="Ex: 768"
+                        placeholder="Entrez un nombre"
                       />
                       <span className="unit-label">valeurs</span>
                     </div>
@@ -846,18 +944,12 @@ export function TheoreticalCalculations() {
 
                 <div className="exercise-action-buttons">
                   <button type="button" className="btn-verify-answer" onClick={verifyStep1}>
-                    <CheckCircle2 size={16} />
-                    <span>Vérifier ma réponse</span>
+                    <CheckCircle2 size={16} /><span>Vérifier ma réponse</span>
                   </button>
                   <button type="button" className="btn-toggle-hint" onClick={() => showNextHint(1)}>
-                    <HelpCircle size={15} />
-                    <span>Indice {hintLevels[1] ? `(${hintLevels[1]}/3)` : ''}</span>
+                    <HelpCircle size={15} /><span>Indice {hintLevels[1] ? `(${hintLevels[1]}/3)` : ''}</span>
                   </button>
-                  <button
-                    type="button"
-                    className="btn-toggle-solution"
-                    onClick={() => setSolutionVisible({ ...solutionVisible, 1: !solutionVisible[1] })}
-                  >
+                  <button type="button" className="btn-toggle-solution" onClick={() => setSolutionVisible({ ...solutionVisible, 1: !solutionVisible[1] })}>
                     <span>{solutionVisible[1] ? 'Masquer la correction' : 'Voir la correction détaillée'}</span>
                   </button>
                 </div>
@@ -869,76 +961,102 @@ export function TheoreticalCalculations() {
                   </div>
                 )}
 
-                {hintLevels[1] && hintLevels[1] >= 1 && (
+                {hintLevels[1] >= 1 && (
                   <div className="hint-collapsible-box">
                     <strong>Indice {hintLevels[1]} :</strong>{' '}
-                    {hintLevels[1] === 1 && `Chaque côté de 224 px est divisé en segments de ${step1PatchSize} px.`}
-                    {hintLevels[1] === 2 && `Calculez (224 / ${step1PatchSize}) × (224 / ${step1PatchSize}) pour N.`}
-                    {hintLevels[1] >= 3 && `Chaque patch contient ${step1PatchSize}×${step1PatchSize} pixels, chacun ayant 3 canaux (R, G, B). Multipliez par 3 !`}
+                    {hintLevels[1] === 1 && `Divisez chaque côté (${isReal ? 224 : 6} px) par la taille du patch (${isReal ? step1PatchSize : 2} px).`}
+                    {hintLevels[1] === 2 && `Multipliez le résultat par lui-même pour obtenir N (grille carrée).`}
+                    {hintLevels[1] >= 3 && `D_flat = P² × C. Chaque pixel a 3 valeurs (R, G, B).`}
                   </div>
                 )}
 
                 {solutionVisible[1] && (
                   <div className="solution-collapsible-box">
-                    <h4>Correction détaillée pas à pas :</h4>
-                    <p>
-                      1. Nombre de patches par côté : <InlineMath math={`224 / ${step1PatchSize} = ${224 / step1PatchSize}`} />.
-                    </p>
-                    <p>
-                      2. Nombre total de patches : <InlineMath math={`N = (${224 / step1PatchSize}) \\times (${224 / step1PatchSize}) = ${(224 / step1PatchSize) ** 2}`} />.
-                    </p>
-                    <p>
-                      3. Vecteur aplati : <InlineMath math={`D = ${step1PatchSize}^2 \\times 3 = ${step1PatchSize * step1PatchSize * 3}`} /> valeurs.
-                    </p>
+                    <h4>Correction détaillée :</h4>
+                    {isReal ? (
+                      <>
+                        <p>1. Patches par côté : <InlineMath math={`\\frac{224}{${step1PatchSize}} = ${patchStats.gridRows}`} /></p>
+                        <p>2. Total : <InlineMath math={`N = ${patchStats.gridRows}^2 = ${patchStats.totalPatches}`} /></p>
+                        <p>3. Vecteur aplati : <InlineMath math={`D_{\\text{flat}} = ${step1PatchSize}^2 \\times 3 = ${patchStats.flattenedDim}`} /></p>
+                      </>
+                    ) : (
+                      <>
+                        <p>1. Patches par côté : <InlineMath math="\frac{6}{2} = 3" /></p>
+                        <p>2. Total : <InlineMath math="N = 3^2 = 9" /></p>
+                        <p>3. Vecteur aplati : <InlineMath math="D_{\text{flat}} = 2^2 \times 3 = 12" /></p>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
 
-              {/* Dynamic Grid Visualizer */}
+              {/* Visual panel */}
               <div className="lab-panel-box visual-panel">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">★</span>
-                  <span className="panel-header-title">Visualisation dynamique de la grille</span>
+                  <span className="panel-header-title">Grille de patches dynamique</span>
                 </div>
-
-                <div className="dynamic-grid-viewport">
-                  <div className="image-with-live-grid">
-                    <img src={imageUrl} alt="Base" className="base-bird-image" />
-                    <div
-                      className="live-grid-svg-overlay"
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: `repeat(${224 / step1PatchSize}, 1fr)`,
-                        gridTemplateRows: `repeat(${224 / step1PatchSize}, 1fr)`,
-                      }}
-                    >
-                      {Array.from({ length: (224 / step1PatchSize) ** 2 }).map((_, i) => (
-                        <div key={i} className="cell-overlay-rect" title={`Patch #${i + 1}`} />
+                {isReal ? (
+                  <div className="dynamic-grid-viewport">
+                    <div className="image-with-live-grid">
+                      <img src={imageUrl} alt="Base" className="base-bird-image" />
+                      <div
+                        className="live-grid-svg-overlay"
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: `repeat(${224 / step1PatchSize}, 1fr)`,
+                          gridTemplateRows: `repeat(${224 / step1PatchSize}, 1fr)`,
+                        }}
+                      >
+                        {Array.from({ length: (224 / step1PatchSize) ** 2 }).map((_, i) => (
+                          <div key={i} className="cell-overlay-rect" title={`Patch #${i + 1}`} />
+                        ))}
+                      </div>
+                    </div>
+                    <span className="grid-meta-summary">
+                      Grille : <b>{224 / step1PatchSize}×{224 / step1PatchSize}</b> ({' '}
+                      <b>{(224 / step1PatchSize) ** 2}</b> patches de {step1PatchSize}×{step1PatchSize} px)
+                    </span>
+                  </div>
+                ) : (
+                  <div className="dynamic-grid-viewport" style={{ padding: '14px' }}>
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(3, 1fr)',
+                      gap: '4px',
+                      width: '90px',
+                      margin: '0 auto 8px',
+                    }}>
+                      {Array.from({ length: 9 }).map((_, i) => (
+                        <div key={i} style={{
+                          width: '28px', height: '28px',
+                          borderRadius: '4px',
+                          border: '1px solid #93c5fd',
+                          background: `hsl(${200 + i * 15}, 60%, 80%)`,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: '10px', fontWeight: '700', color: '#1e3a8a',
+                        }}>{i + 1}</div>
                       ))}
                     </div>
+                    <span className="grid-meta-summary">Miniature 6×6 → 9 patches de 2×2 px</span>
                   </div>
-
-                  <span className="grid-meta-summary">
-                    Grille : <b>{224 / step1PatchSize} × {224 / step1PatchSize}</b> ({' '}
-                    <b>{(224 / step1PatchSize) ** 2}</b> patches de {step1PatchSize}×{step1PatchSize} px )
-                  </span>
-                </div>
+                )}
               </div>
             </div>
           </div>
         )}
 
-        {/* ============================================================== */}
-        {/* ÉTAPE 2 : PROJECTION LINÉAIRE                                  */}
-        {/* ============================================================== */}
+        {/* ══════════════════════════════════════════════════════════════════
+            ÉTAPE 2 — PROJECTION LINÉAIRE (commune ViT & DeiT)
+        ══════════════════════════════════════════════════════════════════ */}
         {currentStep === 2 && (
           <div className="lab-step-view">
             <div className="step-objective-banner">
-              <span className="step-kicker">ÉTAPE 02 / 07</span>
-              <h3>Objectif : Calculer la projection linéaire affine du patch embedding</h3>
+              <span className="step-kicker">ÉTAPE 02 / 07 — commune à ViT et DeiT</span>
+              <h3>Projection linéaire : du patch aplati à l'embedding</h3>
               <p>
-                Chaque patch aplati <InlineMath math="\mathbf{x}_p \in \mathbb{R}^{D_{\text{in}}}" /> est projeté dans l'espace
-                latent <InlineMath math="\mathbf{z} \in \mathbb{R}^{D_{\text{model}}}" /> via la matrice apprenable <InlineMath math="\mathbf{E}" />.
+                Chaque patch aplati <InlineMath math="\mathbf{x}_p \in \mathbb{R}^{D_{\text{in}}}" /> est projeté
+                via la matrice apprenante <InlineMath math="\mathbf{E} \in \mathbb{R}^{D_{\text{in}} \times D_{\text{model}}}" />.
               </p>
             </div>
 
@@ -946,11 +1064,27 @@ export function TheoreticalCalculations() {
               <div className="lab-panel-box">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">2</span>
-                  <span className="panel-header-title">Dimensions &amp; Multiplication Matricielle</span>
+                  <span className="panel-header-title">Dimensions & Multiplication Matricielle</span>
                 </div>
 
                 <div className="formula-callout-box">
-                  <BlockMath math="\mathbf{z} = \mathbf{x}_p \mathbf{E} + \mathbf{b},\quad \mathbf{E} \in \mathbb{R}^{D_{\text{in}} \times D_{\text{model}}}" />
+                  <BlockMath math="\mathbf{z}_p = \mathbf{x}_p\,\mathbf{E} + \mathbf{b}, \quad \mathbf{E} \in \mathbb{R}^{D_{\text{in}} \times D_{\text{model}}}" />
+                </div>
+
+                <div className="info-banner-blue" style={{ marginBottom: '12px' }}>
+                  <Info size={15} />
+                  <span>
+                    <strong>Note implémentation :</strong> Le papier ViT original n'inclut pas de biais.
+                    HuggingFace utilise une <code>Conv2d(C, D_model, P, stride=P)</code> avec biais.
+                    Dans les formules, <strong>E désigne uniquement la matrice de projection</strong> (jamais un embedding de token).
+                    Les vecteurs de patch après projection sont notés <strong>z_p</strong>.
+                  </span>
+                </div>
+
+                <div className="context-data-box">
+                  {isReal
+                    ? <span>Mode Réel : D_in = D_flat = {patchStats.flattenedDim}, D_model = 768</span>
+                    : <span>Mode Miniature : D_in = 12 (= 2²×3), D_model = 4</span>}
                 </div>
 
                 <div className="exercise-inputs-grid">
@@ -961,7 +1095,7 @@ export function TheoreticalCalculations() {
                       className="styled-lab-input"
                       value={step2Inputs.dimIn}
                       onChange={(e) => setStep2Inputs({ ...step2Inputs, dimIn: e.target.value })}
-                      placeholder={diffLevel === 'miniature' ? '12' : '768'}
+                      placeholder="Entrez un nombre"
                     />
                   </div>
 
@@ -972,14 +1106,12 @@ export function TheoreticalCalculations() {
                       className="styled-lab-input"
                       value={step2Inputs.dimOut}
                       onChange={(e) => setStep2Inputs({ ...step2Inputs, dimOut: e.target.value })}
-                      placeholder={diffLevel === 'miniature' ? '4' : '768'}
+                      placeholder="Entrez un nombre"
                     />
                   </div>
 
                   <div className="sub-calc-step">
-                    <span className="grp-label">
-                      3. Multiplication manuelle sur un petit exemple :
-                    </span>
+                    <span className="grp-label">3. Multiplication manuelle (exemple numérique) :</span>
                     <p className="desc-text">
                       Soit <InlineMath math="\mathbf{x} = [2, 1, 3]" />,{' '}
                       <InlineMath math="\mathbf{W} = \begin{pmatrix} 1 & 0 \\ 0 & 2 \\ 1 & 1 \end{pmatrix}" /> et{' '}
@@ -1012,19 +1144,13 @@ export function TheoreticalCalculations() {
 
                 <div className="exercise-action-buttons">
                   <button type="button" className="btn-verify-answer" onClick={verifyStep2}>
-                    <CheckCircle2 size={16} />
-                    <span>Vérifier ma réponse</span>
+                    <CheckCircle2 size={16} /><span>Vérifier ma réponse</span>
                   </button>
                   <button type="button" className="btn-toggle-hint" onClick={() => showNextHint(2)}>
-                    <HelpCircle size={15} />
-                    <span>Indice {hintLevels[2] ? `(${hintLevels[2]}/3)` : ''}</span>
+                    <HelpCircle size={15} /><span>Indice {hintLevels[2] ? `(${hintLevels[2]}/3)` : ''}</span>
                   </button>
-                  <button
-                    type="button"
-                    className="btn-toggle-solution"
-                    onClick={() => setSolutionVisible({ ...solutionVisible, 2: !solutionVisible[2] })}
-                  >
-                    <span>{solutionVisible[2] ? 'Masquer la correction' : 'Voir la correction'}</span>
+                  <button type="button" className="btn-toggle-solution" onClick={() => setSolutionVisible({ ...solutionVisible, 2: !solutionVisible[2] })}>
+                    <span>{solutionVisible[2] ? 'Masquer' : 'Voir la correction'}</span>
                   </button>
                 </div>
 
@@ -1035,39 +1161,55 @@ export function TheoreticalCalculations() {
                   </div>
                 )}
 
+                {hintLevels[2] >= 1 && (
+                  <div className="hint-collapsible-box">
+                    <strong>Indice {hintLevels[2]} :</strong>{' '}
+                    {hintLevels[2] === 1 && 'D_in = taille du patch aplati = P² × C.'}
+                    {hintLevels[2] === 2 && 'z₁ = somme de x_i × W_i1 pour i=1..3, puis + b₁.'}
+                    {hintLevels[2] >= 3 && 'z₁ = 2×1 + 1×0 + 3×1 + 1 = 6. z₂ = 2×0 + 1×2 + 3×1 − 1 = 4.'}
+                  </div>
+                )}
+
                 {solutionVisible[2] && (
                   <div className="solution-collapsible-box">
-                    <h4>Calcul détaillé :</h4>
-                    <p><InlineMath math="z_1 = 2(1) + 1(0) + 3(1) + 1 = 2 + 0 + 3 + 1 = 6" /></p>
-                    <p><InlineMath math="z_2 = 2(0) + 1(2) + 3(1) - 1 = 0 + 2 + 3 - 1 = 4" /></p>
-                    <p>Résultat : <InlineMath math="\mathbf{z} = [6, 4]" />.</p>
+                    <h4>Correction :</h4>
+                    <p>D_in = {isReal ? patchStats.flattenedDim : 12} (= {isReal ? step1PatchSize : 2}²×3), D_model = {isReal ? 768 : 4}.</p>
+                    <p><InlineMath math="z_1 = 2(1) + 1(0) + 3(1) + 1 = 6" /></p>
+                    <p><InlineMath math="z_2 = 2(0) + 1(2) + 3(1) - 1 = 4" /></p>
                   </div>
                 )}
               </div>
 
+              {/* Visual: Embedding ribbon */}
               <div className="lab-panel-box visual-panel">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">★</span>
-                  <span className="panel-header-title">Visualisation interactive des embeddings</span>
+                  <span className="panel-header-title">Ruban des vecteurs z_p après projection</span>
                 </div>
                 <div style={{ padding: '12px 10px' }}>
-                  <EmbeddingRibbon patchSize={step1PatchSize} />
+                  <EmbeddingRibbon
+                    N={isReal ? patchStats.totalPatches : 9}
+                    dModel={isReal ? 768 : 4}
+                  />
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* ============================================================== */}
-        {/* ÉTAPE 3 : TOKENS & POSITIONS                                   */}
-        {/* ============================================================== */}
+        {/* ══════════════════════════════════════════════════════════════════
+            ÉTAPE 3 — TOKENS & ENCODAGE POSITIONNEL
+        ══════════════════════════════════════════════════════════════════ */}
         {currentStep === 3 && (
           <div className="lab-step-view">
             <div className="step-objective-banner">
-              <span className="step-kicker">ÉTAPE 03 / 07</span>
-              <h3>Objectif : Concaténation des tokens spéciaux et somme positionnelle</h3>
+              <span className="step-kicker">
+                ÉTAPE 03 / 07 — {selectedModel === 'vit' ? 'ViT : N+1 tokens' : 'DeiT : N+2 tokens'}
+              </span>
+              <h3>Construction des tokens et somme d'encodage positionnel</h3>
               <p>
-                ViT ajoute le token <code>[CLS]</code>. DeiT ajoute en plus le token <code>[DIST]</code>. On additionne ensuite l'encodage positionnel.
+                ViT prépose un token <code>[CLS]</code>. DeiT ajoute également un token <code>[DIST]</code>.
+                On additionne ensuite l'encodage positionnel appris <InlineMath math="\mathbf{E}_{\text{pos}}" />.
               </p>
             </div>
 
@@ -1075,98 +1217,76 @@ export function TheoreticalCalculations() {
               <div className="lab-panel-box">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">3</span>
-                  <span className="panel-header-title">Longueur de séquence &amp; Encodage</span>
+                  <span className="panel-header-title">Séquence & Addition Positionnelle</span>
                 </div>
 
                 <div className="formula-callout-box">
                   {selectedModel === 'deit' ? (
-                    <BlockMath math="\mathbf{Z}_{\text{DeiT}} = \left[\mathbf{x}_{\text{cls}};\; \mathbf{x}_{\text{dist}};\; \mathbf{x}_p^1\mathbf{E};\; \dots;\; \mathbf{x}_p^N\mathbf{E}\right] + \mathbf{E}_{\text{pos}} \quad (N + 2 \text{ tokens})" />
+                    <BlockMath math="\mathbf{Z}_{\text{DeiT}} = \bigl[\mathbf{x}_{\text{cls}};\; \mathbf{x}_{\text{dist}};\; \mathbf{z}_p^1;\; \dots;\; \mathbf{z}_p^N\bigr] + \mathbf{E}_{\text{pos}} \quad (N+2 \text{ tokens})" />
                   ) : (
-                    <BlockMath math="\mathbf{Z}_{\text{ViT}} = \left[\mathbf{x}_{\text{cls}};\; \mathbf{x}_p^1\mathbf{E};\; \dots;\; \mathbf{x}_p^N\mathbf{E}\right] + \mathbf{E}_{\text{pos}} \quad (N + 1 \text{ tokens})" />
+                    <BlockMath math="\mathbf{Z}_{\text{ViT}} = \bigl[\mathbf{x}_{\text{cls}};\; \mathbf{z}_p^1;\; \dots;\; \mathbf{z}_p^N\bigr] + \mathbf{E}_{\text{pos}} \quad (N+1 \text{ tokens})" />
                   )}
                 </div>
 
-                <div className="exercise-inputs-grid">
-                  <div className={`input-field-card ${selectedModel === 'vit' ? 'highlighted-active-model' : ''}`}>
-                    <label>
-                      1. Longueur totale de séquence pour ViT ({diffLevel === 'miniature' ? '9' : '196'} patches) :
-                      {selectedModel === 'vit' && <span className="active-model-tag">Actif</span>}
-                    </label>
-                    <input
-                      type="number"
-                      className="styled-lab-input"
-                      value={step3Inputs.seqLenViT}
-                      onChange={(e) => setStep3Inputs({ ...step3Inputs, seqLenViT: e.target.value })}
-                      placeholder={diffLevel === 'miniature' ? '10' : '197'}
-                    />
-                  </div>
+                <div className="info-banner-blue" style={{ marginBottom: '10px', fontSize: '11.5px' }}>
+                  <Info size={14} />
+                  <span>
+                    <strong>[CLS]</strong> et <strong>[DIST]</strong> ont chacun leur propre embedding appris et leur propre ligne dans <InlineMath math="\mathbf{E}_{\text{pos}}" />.
+                    {selectedModel === 'vit'
+                      ? ` ViT-Base : E_pos ∈ ℝ^{197×768} (1 spécial + 196 patches).`
+                      : ` DeiT-Base : E_pos ∈ ℝ^{198×768} (2 spéciaux + 196 patches).`}
+                  </span>
+                </div>
 
-                  <div className={`input-field-card ${selectedModel === 'deit' ? 'highlighted-active-model deit' : ''}`}>
+                <div className="exercise-inputs-grid">
+                  <div className="input-field-card highlighted-active-model">
                     <label>
-                      2. Longueur totale de séquence pour DeiT ({diffLevel === 'miniature' ? '9' : '196'} patches) :
-                      {selectedModel === 'deit' && <span className="active-model-tag deit">Actif</span>}
+                      1. Longueur totale de séquence pour {selectedModel === 'vit' ? 'ViT' : 'DeiT'}{' '}
+                      ({isReal ? patchStats.totalPatches : 9} patches) :
+                      <span className={`active-model-tag ${selectedModel === 'deit' ? 'deit' : ''}`}>Actif</span>
                     </label>
                     <input
                       type="number"
                       className="styled-lab-input"
-                      value={step3Inputs.seqLenDeiT}
-                      onChange={(e) => setStep3Inputs({ ...step3Inputs, seqLenDeiT: e.target.value })}
-                      placeholder={diffLevel === 'miniature' ? '11' : '198'}
+                      value={step3Inputs.seqLen}
+                      onChange={(e) => setStep3Inputs({ ...step3Inputs, seqLen: e.target.value })}
+                      placeholder="Entrez un nombre"
                     />
                   </div>
 
                   <div className="sub-calc-step">
-                    <span className="grp-label">3. Addition vectorielle d'encodage positionnel :</span>
+                    <span className="grp-label">2. Addition vectorielle d'encodage positionnel :</span>
                     <p className="desc-text">
-                      Soit <InlineMath math="\mathbf{E} = [0.5, -0.2, 1.0]" /> et{' '}
-                      <InlineMath math="\mathbf{E}_{\text{pos}} = [0.1, 0.4, -0.3]" />. Calculez <InlineMath math="\mathbf{Z} = \mathbf{E} + \mathbf{E}_{\text{pos}}" /> :
+                      Soit <InlineMath math="\mathbf{z}_p = [0.5,\; -0.2,\; 1.0]" /> et{' '}
+                      <InlineMath math="\mathbf{e}_{\text{pos}} = [0.1,\; 0.4,\; -0.3]" />. Calculez <InlineMath math="\mathbf{Z} = \mathbf{z}_p + \mathbf{e}_{\text{pos}}" /> :
                     </p>
                     <div className="result-cells-row">
-                      <div className="vec-box">
-                        <span>Z₁ = </span>
-                        <input
-                          type="number"
-                          step="0.1"
-                          className="cell-input"
-                          value={step3Inputs.zPos1}
-                          onChange={(e) => setStep3Inputs({ ...step3Inputs, zPos1: e.target.value })}
-                        />
-                      </div>
-                      <div className="vec-box">
-                        <span>Z₂ = </span>
-                        <input
-                          type="number"
-                          step="0.1"
-                          className="cell-input"
-                          value={step3Inputs.zPos2}
-                          onChange={(e) => setStep3Inputs({ ...step3Inputs, zPos2: e.target.value })}
-                        />
-                      </div>
-                      <div className="vec-box">
-                        <span>Z₃ = </span>
-                        <input
-                          type="number"
-                          step="0.1"
-                          className="cell-input"
-                          value={step3Inputs.zPos3}
-                          onChange={(e) => setStep3Inputs({ ...step3Inputs, zPos3: e.target.value })}
-                        />
-                      </div>
+                      {['Z₁', 'Z₂', 'Z₃'].map((label, i) => (
+                        <div className="vec-box" key={i}>
+                          <span>{label} = </span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            className="cell-input"
+                            value={[step3Inputs.zPos1, step3Inputs.zPos2, step3Inputs.zPos3][i]}
+                            onChange={(e) => {
+                              const keys = ['zPos1', 'zPos2', 'zPos3'] as const;
+                              setStep3Inputs({ ...step3Inputs, [keys[i]]: e.target.value });
+                            }}
+                            placeholder="?"
+                          />
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>
 
                 <div className="exercise-action-buttons">
                   <button type="button" className="btn-verify-answer" onClick={verifyStep3}>
-                    <CheckCircle2 size={16} />
-                    <span>Vérifier ma réponse</span>
+                    <CheckCircle2 size={16} /><span>Vérifier ma réponse</span>
                   </button>
-                  <button
-                    type="button"
-                    className="btn-toggle-solution"
-                    onClick={() => setSolutionVisible({ ...solutionVisible, 3: !solutionVisible[3] })}
-                  >
-                    <span>{solutionVisible[3] ? 'Masquer' : 'Voir la solution'}</span>
+                  <button type="button" className="btn-toggle-solution" onClick={() => setSolutionVisible({ ...solutionVisible, 3: !solutionVisible[3] })}>
+                    <span>{solutionVisible[3] ? 'Masquer' : 'Voir la correction'}</span>
                   </button>
                 </div>
 
@@ -1176,17 +1296,30 @@ export function TheoreticalCalculations() {
                     <span>{step3Feedback.message}</span>
                   </div>
                 )}
+
+                {solutionVisible[3] && (
+                  <div className="solution-collapsible-box">
+                    <h4>Correction :</h4>
+                    <p>N = {isReal ? patchStats.totalPatches : 9} patches</p>
+                    <p>{selectedModel === 'vit'
+                      ? `ViT : N + 1 = ${seqLenExpected} tokens ([CLS] + ${isReal ? patchStats.totalPatches : 9} patches).`
+                      : `DeiT : N + 2 = ${seqLenExpected} tokens ([CLS] + [DIST] + ${isReal ? patchStats.totalPatches : 9} patches).`}</p>
+                    <p><InlineMath math="\mathbf{Z} = [0.5+0.1,\; -0.2+0.4,\; 1.0-0.3] = [0.6,\; 0.2,\; 0.7]" /></p>
+                  </div>
+                )}
               </div>
 
+              {/* Visual: Token Sequence */}
               <div className="lab-panel-box visual-panel">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">★</span>
-                  <span className="panel-header-title">Alignement des Tokens (Interactif)</span>
+                  <span className="panel-header-title">Séquence de tokens (interactif)</span>
                 </div>
                 <div style={{ padding: '12px 10px' }}>
                   <TokenSequenceVisualizer
                     model={selectedModel as 'vit' | 'deit'}
-                    patchSize={step1PatchSize}
+                    N={isReal ? patchStats.totalPatches : 9}
+                    dModel={isReal ? 768 : 4}
                   />
                 </div>
               </div>
@@ -1194,16 +1327,16 @@ export function TheoreticalCalculations() {
           </div>
         )}
 
-        {/* ============================================================== */}
-        {/* ÉTAPE 4 : LAYER NORMALIZATION                                   */}
-        {/* ============================================================== */}
+        {/* ══════════════════════════════════════════════════════════════════
+            ÉTAPE 4 — LAYER NORMALIZATION (commune ViT & DeiT)
+        ══════════════════════════════════════════════════════════════════ */}
         {currentStep === 4 && (
           <div className="lab-step-view">
             <div className="step-objective-banner">
-              <span className="step-kicker">ÉTAPE 04 / 07</span>
-              <h3>Objectif : Calculer la moyenne, la variance et la normalisation d'un vecteur</h3>
+              <span className="step-kicker">ÉTAPE 04 / 07 — commune à ViT et DeiT</span>
+              <h3>Layer Normalization — centrage et réduction d'un token</h3>
               <p>
-                LayerNorm normalise chaque token selon <InlineMath math="\hat{x}_i = (x_i - \mu)/\sqrt{\sigma^2 + \epsilon}" />.
+                Chaque token est normalisé individuellement selon la formule complète avec paramètres appris γ et β.
               </p>
             </div>
 
@@ -1211,99 +1344,70 @@ export function TheoreticalCalculations() {
               <div className="lab-panel-box">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">4</span>
-                  <span className="panel-header-title">Vecteur d'exemple : [1.0, 3.0, 3.0, 9.0]</span>
+                  <span className="panel-header-title">Vecteur exemple : [1, 3, 3, 9]</span>
                 </div>
 
                 <div className="formula-callout-box">
-                  <BlockMath math="\mu = \frac{1}{D}\sum_{i=1}^D x_i,\quad \sigma^2 = \frac{1}{D}\sum_{i=1}^D (x_i - \mu)^2,\quad \hat{x}_i = \frac{x_i - \mu}{\sqrt{\sigma^2 + \epsilon}}" />
+                  <BlockMath math="\text{LN}(\mathbf{x}) = \gamma \odot \hat{\mathbf{x}} + \beta, \quad \hat{x}_i = \frac{x_i - \mu}{\sqrt{\sigma^2 + \varepsilon}}" />
+                  <BlockMath math="\mu = \frac{1}{D}\sum_{i=1}^D x_i, \qquad \sigma^2 = \frac{1}{D}\sum_{i=1}^D (x_i - \mu)^2" />
+                </div>
+
+                <div className="info-banner-blue" style={{ marginBottom: '10px', fontSize: '11.5px' }}>
+                  <Info size={14} />
+                  <span>ε = 10⁻⁵ (stabilité numérique). Dans cet exercice, γ=1 et β=0 (initialisation). Calculez <InlineMath math="\hat{\mathbf{x}}" />, pas la sortie finale LN.</span>
                 </div>
 
                 <div className="exercise-inputs-grid">
                   <div className="input-field-card">
                     <label>1. Moyenne <InlineMath math="\mu" /> :</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      className="styled-lab-input"
+                    <input type="number" step="0.1" className="styled-lab-input"
                       value={step4Inputs.mean}
                       onChange={(e) => setStep4Inputs({ ...step4Inputs, mean: e.target.value })}
-                      placeholder="Ex: 4.0"
-                    />
+                      placeholder="Entrez un nombre" />
                   </div>
-
                   <div className="input-field-card">
                     <label>2. Variance <InlineMath math="\sigma^2" /> :</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      className="styled-lab-input"
+                    <input type="number" step="0.1" className="styled-lab-input"
                       value={step4Inputs.variance}
                       onChange={(e) => setStep4Inputs({ ...step4Inputs, variance: e.target.value })}
-                      placeholder="Ex: 9.0"
-                    />
+                      placeholder="Entrez un nombre" />
                   </div>
-
                   <div className="input-field-card">
                     <label>3. Écart-type <InlineMath math="\sigma = \sqrt{\sigma^2}" /> :</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      className="styled-lab-input"
+                    <input type="number" step="0.1" className="styled-lab-input"
                       value={step4Inputs.stdDev}
                       onChange={(e) => setStep4Inputs({ ...step4Inputs, stdDev: e.target.value })}
-                      placeholder="Ex: 3.0"
-                    />
+                      placeholder="Entrez un nombre" />
                   </div>
-
                   <div className="sub-calc-step">
-                    <span className="grp-label">4. Vecteur normalisé <InlineMath math="\hat{\mathbf{x}}" /> :</span>
+                    <span className="grp-label">4. Vecteur normalisé <InlineMath math="\hat{\mathbf{x}}" /> (3 décimales) :</span>
                     <div className="result-cells-row">
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="cell-input"
-                        value={step4Inputs.xNorm1}
-                        onChange={(e) => setStep4Inputs({ ...step4Inputs, xNorm1: e.target.value })}
-                        placeholder="x̂₁"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="cell-input"
-                        value={step4Inputs.xNorm2}
-                        onChange={(e) => setStep4Inputs({ ...step4Inputs, xNorm2: e.target.value })}
-                        placeholder="x̂₂"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="cell-input"
-                        value={step4Inputs.xNorm3}
-                        onChange={(e) => setStep4Inputs({ ...step4Inputs, xNorm3: e.target.value })}
-                        placeholder="x̂₃"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="cell-input"
-                        value={step4Inputs.xNorm4}
-                        onChange={(e) => setStep4Inputs({ ...step4Inputs, xNorm4: e.target.value })}
-                        placeholder="x̂₄"
-                      />
+                      {['x̂₁', 'x̂₂', 'x̂₃', 'x̂₄'].map((label, i) => {
+                        const keys = ['xNorm1', 'xNorm2', 'xNorm3', 'xNorm4'] as const;
+                        return (
+                          <input
+                            key={i}
+                            type="number"
+                            step="0.001"
+                            className="cell-input"
+                            value={step4Inputs[keys[i]]}
+                            onChange={(e) => setStep4Inputs({ ...step4Inputs, [keys[i]]: e.target.value })}
+                            placeholder={label}
+                          />
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
 
                 <div className="exercise-action-buttons">
                   <button type="button" className="btn-verify-answer" onClick={verifyStep4}>
-                    <CheckCircle2 size={16} />
-                    <span>Vérifier ma réponse</span>
+                    <CheckCircle2 size={16} /><span>Vérifier ma réponse</span>
                   </button>
-                  <button
-                    type="button"
-                    className="btn-toggle-solution"
-                    onClick={() => setSolutionVisible({ ...solutionVisible, 4: !solutionVisible[4] })}
-                  >
+                  <button type="button" className="btn-toggle-hint" onClick={() => showNextHint(4)}>
+                    <HelpCircle size={15} /><span>Indice {hintLevels[4] ? `(${hintLevels[4]}/3)` : ''}</span>
+                  </button>
+                  <button type="button" className="btn-toggle-solution" onClick={() => setSolutionVisible({ ...solutionVisible, 4: !solutionVisible[4] })}>
                     <span>{solutionVisible[4] ? 'Masquer' : 'Voir la correction'}</span>
                   </button>
                 </div>
@@ -1314,21 +1418,76 @@ export function TheoreticalCalculations() {
                     <span>{step4Feedback.message}</span>
                   </div>
                 )}
+
+                {hintLevels[4] >= 1 && (
+                  <div className="hint-collapsible-box">
+                    <strong>Indice {hintLevels[4]} :</strong>{' '}
+                    {hintLevels[4] === 1 && 'μ = somme des éléments divisée par 4.'}
+                    {hintLevels[4] === 2 && 'σ² = moyenne des (xᵢ − μ)². Pour chaque terme : (1−4)²=9, (3−4)²=1, (3−4)²=1, (9−4)²=25.'}
+                    {hintLevels[4] >= 3 && 'μ=4, σ²=36/4=9, σ=3. x̂₁=(1−4)/3=−1.000, x̂₂=(3−4)/3=−0.333, x̂₃=−0.333, x̂₄=(9−4)/3=1.667.'}
+                  </div>
+                )}
+
+                {solutionVisible[4] && (
+                  <div className="solution-collapsible-box">
+                    <h4>Correction détaillée :</h4>
+                    <p><InlineMath math="\mu = \frac{1+3+3+9}{4} = \frac{16}{4} = 4.000" /></p>
+                    <p><InlineMath math="\sigma^2 = \frac{(1-4)^2+(3-4)^2+(3-4)^2+(9-4)^2}{4} = \frac{9+1+1+25}{4} = 9.000" /></p>
+                    <p><InlineMath math="\sigma = \sqrt{9} = 3.000" /></p>
+                    <p><InlineMath math="\hat{x}_1 = \frac{1-4}{3} = -1.000, \quad \hat{x}_2 = \frac{3-4}{3} = -0.333" /></p>
+                    <p><InlineMath math="\hat{x}_3 = -0.333, \quad \hat{x}_4 = \frac{9-4}{3} = 1.667" /></p>
+                  </div>
+                )}
               </div>
 
+              {/* Visual: bar chart brut vs normalisé */}
               <div className="lab-panel-box visual-panel">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">★</span>
-                  <span className="panel-header-title">Centrage &amp; Réduction visuelle</span>
+                  <span className="panel-header-title">Centrage & Réduction (μ=4, σ=3)</span>
                 </div>
-                <div className="norm-comparison-bars">
-                  <div className="bar-visual-stack">
-                    <div className="blue-fill" style={{ height: '70px' }} />
-                    <span className="bar-title">Brut (μ=4, σ=3)</span>
+                <div className="norm-comparison-bars" style={{ padding: '14px', gap: '20px' }}>
+                  {/* Raw values */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748b', marginBottom: '6px', textAlign: 'center' }}>
+                      Brut [1, 3, 3, 9]
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px', height: '100px', justifyContent: 'center' }}>
+                      {[1, 3, 3, 9].map((v, i) => (
+                        <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+                          <span style={{ fontSize: '9px', color: '#64748b' }}>{v}</span>
+                          <div style={{ width: '22px', height: `${(v / 9) * 80}px`, background: '#93c5fd', borderRadius: '3px 3px 0 0' }} />
+                          <span style={{ fontSize: '9px', color: '#94a3b8' }}>x{i+1}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8', textAlign: 'center', marginTop: '4px' }}>μ=4, σ=3</div>
                   </div>
-                  <div className="bar-visual-stack">
-                    <div className="green-fill" style={{ height: '70px' }} />
-                    <span className="bar-title">Normalisé (μ=0, σ=1)</span>
+
+                  <div style={{ display: 'flex', alignItems: 'center', fontSize: '20px', color: '#6366f1' }}>→</div>
+
+                  {/* Normalized values */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748b', marginBottom: '6px', textAlign: 'center' }}>
+                      Normalisé x̂
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', height: '100px', justifyContent: 'center' }}>
+                      {[-1.0, -0.333, -0.333, 1.667].map((v, i) => {
+                        const absV = Math.abs(v);
+                        const isNeg = v < 0;
+                        return (
+                          <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+                            {!isNeg && <span style={{ fontSize: '8px', color: '#065f46' }}>{v.toFixed(3)}</span>}
+                            {!isNeg && <div style={{ width: '22px', height: `${absV * 35}px`, background: '#34d399', borderRadius: '3px 3px 0 0' }} />}
+                            <div style={{ width: '1px', height: '2px', background: '#94a3b8' }} />
+                            {isNeg && <div style={{ width: '22px', height: `${absV * 35}px`, background: '#fca5a5', borderRadius: '0 0 3px 3px' }} />}
+                            {isNeg && <span style={{ fontSize: '8px', color: '#dc2626' }}>{v.toFixed(3)}</span>}
+                            <span style={{ fontSize: '9px', color: '#94a3b8' }}>x̂{i+1}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8', textAlign: 'center', marginTop: '4px' }}>μ=0, σ=1</div>
                   </div>
                 </div>
               </div>
@@ -1336,17 +1495,20 @@ export function TheoreticalCalculations() {
           </div>
         )}
 
-        {/* ============================================================== */}
-        {/* ÉTAPE 5 : ATTENTION MULTI-HEAD                                  */}
-        {/* ============================================================== */}
+        {/* ══════════════════════════════════════════════════════════════════
+            ÉTAPE 5 — ATTENTION MULTI-HEAD (commune ViT & DeiT)
+        ══════════════════════════════════════════════════════════════════ */}
         {currentStep === 5 && (
           <div className="lab-step-view">
             <div className="step-objective-banner">
-              <span className="step-kicker">ÉTAPE 05 / 07</span>
-              <h3>Objectif : Calculer le produit scalaire mis à l'échelle et le Softmax</h3>
+              <span className="step-kicker">
+                ÉTAPE 05 / 07 — commune (matrice {selectedModel === 'deit' ? '198×198' : '197×197'} en pratique)
+              </span>
+              <h3>Scaled Dot-Product Attention — calcul de QKᵀ, S et Softmax</h3>
               <p>
-                On donne <InlineMath math="\mathbf{Q} = \begin{pmatrix} 2 & 0 \\ 1 & 1 \end{pmatrix}" /> et{' '}
-                <InlineMath math="\mathbf{K} = \begin{pmatrix} 1 & 1 \\ 0 & 2 \end{pmatrix}" /> avec <InlineMath math="d_k = 4" />.
+                On donne <InlineMath math="\mathbf{Q} = \begin{pmatrix}2&0&1&0\\1&1&0&1\end{pmatrix}" />,{' '}
+                <InlineMath math="\mathbf{K} = \begin{pmatrix}1&1&0&0\\0&2&1&0\end{pmatrix}" />,{' '}
+                <InlineMath math="d_k = 4" /> (donc <InlineMath math="\sqrt{d_k} = 2" />).
               </p>
             </div>
 
@@ -1354,107 +1516,84 @@ export function TheoreticalCalculations() {
               <div className="lab-panel-box">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">5</span>
-                  <span className="panel-header-title">Équation de Scaled Dot-Product</span>
+                  <span className="panel-header-title">Scaled Dot-Product Attention</span>
                 </div>
 
                 <div className="formula-callout-box">
-                  <BlockMath math="\mathbf{S} = \frac{\mathbf{Q}\mathbf{K}^T}{\sqrt{d_k}},\quad \mathbf{A} = \text{softmax}(\mathbf{S})" />
+                  <BlockMath math="\mathbf{S} = \frac{\mathbf{Q}\mathbf{K}^T}{\sqrt{d_k}}, \qquad \mathbf{A} = \text{softmax}(\mathbf{S}) \quad \text{(ligne par ligne)}" />
                 </div>
 
+                {selectedModel === 'deit' && (
+                  <div className="info-banner-blue" style={{ marginBottom: '10px', fontSize: '11.5px' }}>
+                    <Info size={14} />
+                    <span>Pour DeiT, la matrice d'attention complète est <strong>198×198</strong> (un token [DIST] supplémentaire). Le calcul reste identique.</span>
+                  </div>
+                )}
+
                 <div className="exercise-inputs-grid">
+                  {/* QKT row 1 */}
                   <div className="sub-calc-step">
-                    <span className="grp-label">1. Matrice transposée <InlineMath math="\mathbf{K}^T" /> :</span>
+                    <span className="grp-label">1. <InlineMath math="\mathbf{Q}\mathbf{K}^T" /> — première ligne (tokens 1 et 2) :</span>
+                    <p className="desc-text" style={{ fontSize: '11px' }}>
+                      Rappel : Q[0]=[2,0,1,0], K[0]=[1,1,0,0], K[1]=[0,2,1,0].
+                    </p>
                     <div className="result-cells-row">
-                      <input
-                        type="number"
-                        className="cell-input"
-                        value={step5Inputs.kt11}
-                        onChange={(e) => setStep5Inputs({ ...step5Inputs, kt11: e.target.value })}
-                        placeholder="k₁₁"
-                      />
-                      <input
-                        type="number"
-                        className="cell-input"
-                        value={step5Inputs.kt12}
-                        onChange={(e) => setStep5Inputs({ ...step5Inputs, kt12: e.target.value })}
-                        placeholder="k₁₂"
-                      />
-                    </div>
-                    <div className="result-cells-row">
-                      <input
-                        type="number"
-                        className="cell-input"
-                        value={step5Inputs.kt21}
-                        onChange={(e) => setStep5Inputs({ ...step5Inputs, kt21: e.target.value })}
-                        placeholder="k₂₁"
-                      />
-                      <input
-                        type="number"
-                        className="cell-input"
-                        value={step5Inputs.kt22}
-                        onChange={(e) => setStep5Inputs({ ...step5Inputs, kt22: e.target.value })}
-                        placeholder="k₂₂"
-                      />
+                      <span>QKᵀ[1,1] = </span>
+                      <input type="number" className="cell-input"
+                        value={step5Inputs.qkt11}
+                        onChange={(e) => setStep5Inputs({ ...step5Inputs, qkt11: e.target.value })}
+                        placeholder="?" />
+                      <span>QKᵀ[1,2] = </span>
+                      <input type="number" className="cell-input"
+                        value={step5Inputs.qkt12}
+                        onChange={(e) => setStep5Inputs({ ...step5Inputs, qkt12: e.target.value })}
+                        placeholder="?" />
                     </div>
                   </div>
 
+                  {/* Scores S row 1 */}
                   <div className="sub-calc-step">
-                    <span className="grp-label">2. Scores échelonnés ligne 1 (<InlineMath math="\mathbf{Q}\mathbf{K}^T / \sqrt{4}" />) :</span>
+                    <span className="grp-label">2. Scores échelonnés <InlineMath math="S = QK^T / \sqrt{4}" /> — ligne 1 :</span>
                     <div className="result-cells-row">
-                      <span>S₁₁ = </span>
-                      <input
-                        type="number"
-                        step="0.1"
-                        className="cell-input"
+                      <span>S[1,1] = </span>
+                      <input type="number" step="0.1" className="cell-input"
                         value={step5Inputs.s11}
                         onChange={(e) => setStep5Inputs({ ...step5Inputs, s11: e.target.value })}
-                      />
-                      <span>S₁₂ = </span>
-                      <input
-                        type="number"
-                        step="0.1"
-                        className="cell-input"
+                        placeholder="?" />
+                      <span>S[1,2] = </span>
+                      <input type="number" step="0.1" className="cell-input"
                         value={step5Inputs.s12}
                         onChange={(e) => setStep5Inputs({ ...step5Inputs, s12: e.target.value })}
-                      />
+                        placeholder="?" />
                     </div>
                   </div>
 
+                  {/* Softmax A row 1 */}
                   <div className="sub-calc-step">
-                    <span className="grp-label">3. Poids d'attention Softmax ligne 1 :</span>
+                    <span className="grp-label">3. Poids d'attention Softmax — ligne 1 :</span>
                     <div className="result-cells-row">
-                      <span>A₁₁ = </span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="cell-input"
+                      <span>A[1,1] = </span>
+                      <input type="number" step="0.001" className="cell-input"
                         value={step5Inputs.a11}
                         onChange={(e) => setStep5Inputs({ ...step5Inputs, a11: e.target.value })}
-                        placeholder="0.73"
-                      />
-                      <span>A₁₂ = </span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="cell-input"
+                        placeholder="?" />
+                      <span>A[1,2] = </span>
+                      <input type="number" step="0.001" className="cell-input"
                         value={step5Inputs.a12}
                         onChange={(e) => setStep5Inputs({ ...step5Inputs, a12: e.target.value })}
-                        placeholder="0.27"
-                      />
+                        placeholder="?" />
                     </div>
                   </div>
                 </div>
 
                 <div className="exercise-action-buttons">
                   <button type="button" className="btn-verify-answer" onClick={verifyStep5}>
-                    <CheckCircle2 size={16} />
-                    <span>Vérifier ma réponse</span>
+                    <CheckCircle2 size={16} /><span>Vérifier ma réponse</span>
                   </button>
-                  <button
-                    type="button"
-                    className="btn-toggle-solution"
-                    onClick={() => setSolutionVisible({ ...solutionVisible, 5: !solutionVisible[5] })}
-                  >
+                  <button type="button" className="btn-toggle-hint" onClick={() => showNextHint(5)}>
+                    <HelpCircle size={15} /><span>Indice {hintLevels[5] ? `(${hintLevels[5]}/3)` : ''}</span>
+                  </button>
+                  <button type="button" className="btn-toggle-solution" onClick={() => setSolutionVisible({ ...solutionVisible, 5: !solutionVisible[5] })}>
                     <span>{solutionVisible[5] ? 'Masquer' : 'Voir la correction'}</span>
                   </button>
                 </div>
@@ -1465,42 +1604,69 @@ export function TheoreticalCalculations() {
                     <span>{step5Feedback.message}</span>
                   </div>
                 )}
+
+                {hintLevels[5] >= 1 && (
+                  <div className="hint-collapsible-box">
+                    <strong>Indice {hintLevels[5]} :</strong>{' '}
+                    {hintLevels[5] === 1 && 'QKᵀ[1,j] = somme de Q[1,k] × K[j,k] pour k=0..3 (produit scalaire ligne×ligne).'}
+                    {hintLevels[5] === 2 && `QKᵀ[1,1] = 2×1+0×1+1×0+0×0 = ${attnRef.QKT[0][0]}. QKᵀ[1,2] = 2×0+0×2+1×1+0×0 = ${attnRef.QKT[0][1]}.`}
+                    {hintLevels[5] >= 3 && `S[1,:]=[${attnRef.S[0].map(v=>v.toFixed(3)).join(', ')}]. Softmax(S[1,:]) = [e^${attnRef.S[0][0]}/(e^${attnRef.S[0][0]}+e^${attnRef.S[0][1]}), ...] ≈ [${attnRef.A[0].map(v=>v.toFixed(3)).join(', ')}].`}
+                  </div>
+                )}
+
+                {solutionVisible[5] && (
+                  <div className="solution-collapsible-box">
+                    <h4>Correction :</h4>
+                    <p><InlineMath math={`\\mathbf{QK}^T = \\begin{pmatrix}${attnRef.QKT[0].join('&')}\\\\${attnRef.QKT[1].join('&')}\\end{pmatrix}`} /></p>
+                    <p><InlineMath math={`\\mathbf{S} = \\begin{pmatrix}${attnRef.S[0].map(v=>v.toFixed(3)).join('&')}\\\\${attnRef.S[1].map(v=>v.toFixed(3)).join('&')}\\end{pmatrix}`} /></p>
+                    <p><InlineMath math={`\\mathbf{A} = \\begin{pmatrix}${attnRef.A[0].map(v=>v.toFixed(3)).join('&')}\\\\${attnRef.A[1].map(v=>v.toFixed(3)).join('&')}\\end{pmatrix}`} /></p>
+                    <p style={{ fontSize: '11px', color: '#64748b' }}>
+                      Softmax ligne 2 : [e¹/(e¹+e¹), e¹/(e¹+e¹)] = [0.5, 0.5] (scores égaux → distribution uniforme).
+                    </p>
+                  </div>
+                )}
               </div>
 
+              {/* Visual: Heatmap computed from real values */}
               <div className="lab-panel-box visual-panel">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">★</span>
                   <span className="panel-header-title">Heatmap d'attention 2×2</span>
                 </div>
                 <div className="mini-heatmap-grid">
-                  <div className="heat-cell" style={{ backgroundColor: 'rgba(37, 99, 235, 0.73)' }}>
-                    73%
-                  </div>
-                  <div className="heat-cell" style={{ backgroundColor: 'rgba(37, 99, 235, 0.27)' }}>
-                    27%
-                  </div>
-                  <div className="heat-cell" style={{ backgroundColor: 'rgba(37, 99, 235, 0.50)' }}>
-                    50%
-                  </div>
-                  <div className="heat-cell" style={{ backgroundColor: 'rgba(37, 99, 235, 0.50)' }}>
-                    50%
-                  </div>
+                  {attnRef.A.map((row, i) =>
+                    row.map((v, j) => (
+                      <div
+                        key={`${i}-${j}`}
+                        className="heat-cell"
+                        style={{ backgroundColor: `rgba(37, 99, 235, ${v})`, color: v > 0.5 ? '#fff' : '#1e3a8a' }}
+                        title={`A[${i+1},${j+1}] = ${v.toFixed(3)}`}
+                      >
+                        {(v * 100).toFixed(0)}%
+                      </div>
+                    ))
+                  )}
                 </div>
+                <p style={{ fontSize: '11px', color: '#64748b', padding: '8px 12px', textAlign: 'center' }}>
+                  Ligne 1 : token 1 porte ~{(attnRef.A[0][0]*100).toFixed(0)}% sur token 1 et ~{(attnRef.A[0][1]*100).toFixed(0)}% sur token 2.
+                  <br/>Ligne 2 : distribution uniforme (scores S[2,1]=S[2,2]=1).
+                </p>
               </div>
             </div>
           </div>
         )}
 
-        {/* ============================================================== */}
-        {/* ÉTAPE 6 : MLP & GELU                                           */}
-        {/* ============================================================== */}
+        {/* ══════════════════════════════════════════════════════════════════
+            ÉTAPE 6 — MLP & GELU (commune ViT & DeiT)
+        ══════════════════════════════════════════════════════════════════ */}
         {currentStep === 6 && (
           <div className="lab-step-view">
             <div className="step-objective-banner">
-              <span className="step-kicker">ÉTAPE 06 / 07</span>
-              <h3>Objectif : Calculer l'expansion MLP et l'activation non linéaire GELU</h3>
+              <span className="step-kicker">ÉTAPE 06 / 07 — commune à ViT et DeiT</span>
+              <h3>Réseau MLP et activation GELU</h3>
               <p>
-                L'activation <InlineMath math="\text{GELU}(x) = x \Phi(x)" /> pondère l'entrée par la probabilité cumulée d'une loi normale standard.
+                L'activation <InlineMath math="\text{GELU}(x) = x\,\Phi(x)" /> pondère l'entrée par la probabilité
+                cumulée d'une loi normale standard. Contrairement à ReLU, GELU présente un léger creux pour x ≈ −0.75.
               </p>
             </div>
 
@@ -1508,71 +1674,61 @@ export function TheoreticalCalculations() {
               <div className="lab-panel-box">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">6</span>
-                  <span className="panel-header-title">Formule Exacte &amp; Approximation</span>
+                  <span className="panel-header-title">Structure MLP & Valeurs GELU</span>
                 </div>
 
                 <div className="formula-callout-box">
-                  <BlockMath math="\text{GELU}(x) \approx 0.5 x \left(1 + \tanh\left(\sqrt{\frac{2}{\pi}} (x + 0.044715 x^3)\right)\right)" />
+                  <BlockMath math="\text{MLP}(\mathbf{z}) = \mathbf{W}_2\,\text{GELU}(\mathbf{W}_1\mathbf{z} + \mathbf{b}_1) + \mathbf{b}_2" />
+                  <BlockMath math="\text{GELU}(x) \approx 0.5\,x\!\left(1 + \tanh\!\left(\sqrt{\tfrac{2}{\pi}}\bigl(x + 0.044715\,x^3\bigr)\right)\right)" />
+                </div>
+
+                <div className="info-banner-blue" style={{ marginBottom: '10px', fontSize: '11.5px' }}>
+                  <Info size={14} />
+                  <span>
+                    Structure : Linear(D→4D) → GELU → Linear(4D→D). En mode {isReal ? 'Réel' : 'Miniature'} : D = {isReal ? 768 : 4}, 4D = {isReal ? 3072 : 16}.
+                  </span>
                 </div>
 
                 <div className="exercise-inputs-grid">
                   <div className="input-field-card">
                     <label>1. Facteur d'expansion de la couche cachée MLP :</label>
-                    <input
-                      type="number"
-                      className="styled-lab-input"
+                    <input type="number" className="styled-lab-input"
                       value={step6Inputs.expansionFactor}
                       onChange={(e) => setStep6Inputs({ ...step6Inputs, expansionFactor: e.target.value })}
-                      placeholder="Ex: 4"
-                    />
+                      placeholder="Entrez un nombre" />
                   </div>
-
                   <div className="input-field-card">
-                    <label>2. Dimension MLP pour ViT-Base (<InlineMath math="4 \times 768" />) :</label>
-                    <input
-                      type="number"
-                      className="styled-lab-input"
+                    <label>2. Dimension MLP (<InlineMath math={`4 \\times ${isReal ? 768 : 4}`} />) :</label>
+                    <input type="number" className="styled-lab-input"
                       value={step6Inputs.mlpDim}
                       onChange={(e) => setStep6Inputs({ ...step6Inputs, mlpDim: e.target.value })}
-                      placeholder="Ex: 3072"
-                    />
+                      placeholder="Entrez un nombre" />
                   </div>
-
                   <div className="sub-calc-step">
-                    <span className="grp-label">3. Calcul de GELU :</span>
+                    <span className="grp-label">3. Calcul de GELU (formule exacte) :</span>
                     <div className="result-cells-row">
                       <span>GELU(3.0) ≈ </span>
-                      <input
-                        type="number"
-                        step="0.001"
-                        className="cell-input"
+                      <input type="number" step="0.001" className="cell-input"
                         value={step6Inputs.geluZ1}
                         onChange={(e) => setStep6Inputs({ ...step6Inputs, geluZ1: e.target.value })}
-                        placeholder="2.996"
-                      />
-                      <span>GELU(-1.0) ≈ </span>
-                      <input
-                        type="number"
-                        step="0.001"
-                        className="cell-input"
+                        placeholder="?" />
+                      <span>GELU(−1.0) ≈ </span>
+                      <input type="number" step="0.001" className="cell-input"
                         value={step6Inputs.geluZ2}
                         onChange={(e) => setStep6Inputs({ ...step6Inputs, geluZ2: e.target.value })}
-                        placeholder="-0.159"
-                      />
+                        placeholder="?" />
                     </div>
                   </div>
                 </div>
 
                 <div className="exercise-action-buttons">
                   <button type="button" className="btn-verify-answer" onClick={verifyStep6}>
-                    <CheckCircle2 size={16} />
-                    <span>Vérifier ma réponse</span>
+                    <CheckCircle2 size={16} /><span>Vérifier ma réponse</span>
                   </button>
-                  <button
-                    type="button"
-                    className="btn-toggle-solution"
-                    onClick={() => setSolutionVisible({ ...solutionVisible, 6: !solutionVisible[6] })}
-                  >
+                  <button type="button" className="btn-toggle-hint" onClick={() => showNextHint(6)}>
+                    <HelpCircle size={15} /><span>Indice {hintLevels[6] ? `(${hintLevels[6]}/3)` : ''}</span>
+                  </button>
+                  <button type="button" className="btn-toggle-solution" onClick={() => setSolutionVisible({ ...solutionVisible, 6: !solutionVisible[6] })}>
                     <span>{solutionVisible[6] ? 'Masquer' : 'Voir la correction'}</span>
                   </button>
                 </div>
@@ -1583,47 +1739,54 @@ export function TheoreticalCalculations() {
                     <span>{step6Feedback.message}</span>
                   </div>
                 )}
+
+                {hintLevels[6] >= 1 && (
+                  <div className="hint-collapsible-box">
+                    <strong>Indice {hintLevels[6]} :</strong>{' '}
+                    {hintLevels[6] === 1 && 'Le MLP de ViT-Base expandit les activations 4× en largeur (D→4D) avant de les comprimer (4D→D).'}
+                    {hintLevels[6] === 2 && 'Pour GELU(3.0) : x très positif → Φ(x)≈1 → GELU(x)≈x. Pour GELU(−1) : x négatif → Φ(x)<0.5 → GELU<0.'}
+                    {hintLevels[6] >= 3 && `GELU(3.0) = 0.5×3×(1+tanh(√(2/π)×(3+0.044715×27))) ≈ ${geluExactLocal(3.0).toFixed(3)}. GELU(−1.0) ≈ ${geluExactLocal(-1.0).toFixed(3)}.`}
+                  </div>
+                )}
+
+                {solutionVisible[6] && (
+                  <div className="solution-collapsible-box">
+                    <h4>Correction :</h4>
+                    <p>Facteur = 4. D_MLP = 4 × {isReal ? 768 : 4} = {isReal ? 3072 : 16}.</p>
+                    <p>GELU(3.0) = {geluExactLocal(3.0).toFixed(3)} (≈ x pour x ≫ 0)</p>
+                    <p>GELU(−1.0) = {geluExactLocal(-1.0).toFixed(3)} (creux léger, contrairement à ReLU qui donne 0)</p>
+                  </div>
+                )}
               </div>
 
+              {/* Visual: Corrected GELU curve */}
               <div className="lab-panel-box visual-panel">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">★</span>
-                  <span className="panel-header-title">Courbe GELU vs ReLU</span>
+                  <span className="panel-header-title">Courbe GELU vs ReLU (axe correct)</span>
                 </div>
-                <div className="gelu-graph-container">
-                  <svg className="gelu-svg-chart" viewBox="-3 -1 6 4">
-                    <line x1="-3" y1="0" x2="3" y2="0" stroke="#cbd5e1" strokeWidth="0.05" />
-                    <line x1="0" y1="-1" x2="0" y2="3" stroke="#cbd5e1" strokeWidth="0.05" />
-                    {/* ReLU: y = max(0, x) */}
-                    <path d="M -3 0 L 0 0 L 3 3" stroke="#94a3b8" strokeWidth="0.08" strokeDasharray="0.2 0.2" fill="none" />
-                    {/* GELU smooth curve */}
-                    <path
-                      d="M -3 -0.01 Q -1 -0.2 0 0 Q 1 0.8 3 3"
-                      stroke="#2563eb"
-                      strokeWidth="0.12"
-                      fill="none"
-                    />
-                  </svg>
-                  <div className="graph-legend-row">
-                    <span className="legend-gelu">— GELU (continue, non monotone)</span>
-                    <span className="legend-relu">--- ReLU (brisée en 0)</span>
-                  </div>
+                <GELUChart />
+                <div style={{ padding: '10px 12px' }}>
+                  <EncoderBlockDiagram />
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* ============================================================== */}
-        {/* ÉTAPE 7 : CLASSIFICATION & DISTILLATION                        */}
-        {/* ============================================================== */}
+        {/* ══════════════════════════════════════════════════════════════════
+            ÉTAPE 7 — CLASSIFICATION FINALE
+        ══════════════════════════════════════════════════════════════════ */}
         {currentStep === 7 && (
           <div className="lab-step-view">
             <div className="step-objective-banner">
-              <span className="step-kicker">ÉTAPE 07 / 07</span>
-              <h3>Objectif : Classification Softmax finale et fusion de distillation DeiT</h3>
+              <span className="step-kicker">
+                ÉTAPE 07 / 07 — {selectedModel === 'vit' ? 'ViT : tête [CLS] unique' : 'DeiT : deux têtes [CLS] + [DIST]'}
+              </span>
+              <h3>Classification Softmax finale {selectedModel === 'deit' ? '+ Fusion de Distillation DeiT' : '(ViT)'}</h3>
               <p>
-                Logits donnés : <InlineMath math="\mathbf{z} = [2.0, 1.0, 0.0]" /> pour 3 classes candidates.
+                Avant la tête : LN final appliqué sur le token [CLS]{selectedModel === 'deit' ? ' et [DIST]' : ''}.
+                Logits ViT/[CLS] : <InlineMath math="\mathbf{z}_{\text{cls}} = [2.0, 1.0, 0.0]" />.
               </p>
             </div>
 
@@ -1631,89 +1794,93 @@ export function TheoreticalCalculations() {
               <div className="lab-panel-box">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">7</span>
-                  <span className="panel-header-title">Formulation Softmax &amp; Fusion DeiT</span>
+                  <span className="panel-header-title">
+                    {selectedModel === 'vit' ? 'Softmax ViT — tête [CLS]' : 'Softmax + Fusion DeiT — deux têtes'}
+                  </span>
                 </div>
 
                 <div className="formula-callout-box">
                   {selectedModel === 'deit' ? (
-                    <BlockMath math="P(y=i) = \frac{e^{z_i}}{\sum_{j} e^{z_j}},\quad P_{\text{DeiT}}^{\text{final}} = \frac{1}{2}\left(P_{\text{cls}} + P_{\text{dist}}\right)" />
+                    <>
+                      <BlockMath math="P_{\text{cls}}(y{=}i) = \frac{e^{z_i^{\text{cls}}}}{\sum_j e^{z_j^{\text{cls}}}}, \quad P_{\text{dist}}(y{=}i) = \frac{e^{z_i^{\text{dist}}}}{\sum_j e^{z_j^{\text{dist}}}}" />
+                      <BlockMath math="P_{\text{final}} = \tfrac{1}{2}\bigl(P_{\text{cls}} + P_{\text{dist}}\bigr) \quad \text{(fusion papier DeiT)}" />
+                    </>
                   ) : (
-                    <BlockMath math="P_{\text{ViT}}(y=i) = \frac{e^{z_i^{\text{cls}}}}{\sum_{j} e^{z_j^{\text{cls}}}},\quad \hat{y} = \operatorname{argmax}_i P_{\text{ViT}}(y=i)" />
+                    <BlockMath math="P_{\text{ViT}}(y{=}i) = \frac{e^{z_i^{\text{cls}}}}{\sum_j e^{z_j^{\text{cls}}}}, \qquad \hat{y} = \operatorname{argmax}_i P_{\text{ViT}}(y{=}i)" />
                   )}
                 </div>
 
+                {/* LN final note */}
+                <div className="info-banner-blue" style={{ marginBottom: '10px', fontSize: '11.5px' }}>
+                  <Info size={14} />
+                  <span>
+                    <strong>LN final :</strong> <InlineMath math="y = \text{LN}(z_L^0)" /> appliqué sur le vecteur du token [CLS] avant la tête linéaire D→1000.
+                    {selectedModel === 'deit' ? ' De même pour [DIST].' : ''}
+                    <br/>Convention : « classe 1 » = premier logit (indexation à partir de 1).
+                  </span>
+                </div>
+
                 <div className="exercise-inputs-grid">
+                  {/* Common: softmax of z_cls=[2,1,0] */}
                   <div className="sub-calc-step">
-                    <span className="grp-label">1. Exponentielles des logits :</span>
+                    <span className="grp-label">
+                      1. {selectedModel === 'deit' ? 'Tête [CLS] — exponentielles' : 'Exponentielles des logits'} :
+                    </span>
+                    <p className="desc-text" style={{ fontSize: '11px' }}>
+                      z_cls = [2.0, 1.0, 0.0]. Calculez exp(z_cls[1]) et la somme totale.
+                    </p>
                     <div className="result-cells-row">
                       <span>exp(2.0) = </span>
-                      <input
-                        type="number"
-                        step="0.001"
-                        className="cell-input"
+                      <input type="number" step="0.001" className="cell-input"
                         value={step7Inputs.exp1}
                         onChange={(e) => setStep7Inputs({ ...step7Inputs, exp1: e.target.value })}
-                        placeholder="7.389"
-                      />
-                      <span>Somme = </span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="cell-input"
+                        placeholder="?" />
+                      <span>Σexp = </span>
+                      <input type="number" step="0.01" className="cell-input"
                         value={step7Inputs.sumExp}
                         onChange={(e) => setStep7Inputs({ ...step7Inputs, sumExp: e.target.value })}
-                        placeholder="11.11"
-                      />
+                        placeholder="?" />
                     </div>
                   </div>
 
                   <div className="input-field-card">
-                    <label>2. Probabilité de la classe 1 (<InlineMath math="P(y=1)" />) :</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="styled-lab-input"
+                    <label>2. Probabilité classe 1 — <InlineMath math="P_{\text{cls}}(y=1)" /> :</label>
+                    <input type="number" step="0.001" className="styled-lab-input"
                       value={step7Inputs.prob1}
                       onChange={(e) => setStep7Inputs({ ...step7Inputs, prob1: e.target.value })}
-                      placeholder="0.665 (66.5%)"
-                    />
+                      placeholder="?" />
                   </div>
 
                   {selectedModel === 'deit' ? (
                     <div className="sub-calc-step deit-highlight-box">
                       <span className="grp-label">
-                        3. Fusion des têtes DeiT (<InlineMath math="P_{\text{cls}} = [0.60, 0.30, 0.10]" />, <InlineMath math="P_{\text{dist}} = [0.80, 0.15, 0.05]" />) :
+                        3. Fusion papier DeiT — <InlineMath math="P_{\text{dist}}" /> donnée :{' '}
+                        <InlineMath math={`[${step7Ref.softmaxDist.probs.map(v=>v.toFixed(3)).join(',\\; ')}]`} />
                       </span>
                       <p className="desc-text">
-                        Calculez la moyenne arithmétique de distillation : <InlineMath math="P_i = \frac{1}{2}(P_{\text{cls},i} + P_{\text{dist},i})" />
+                        Calculez <InlineMath math="P_{\text{final}} = \tfrac{1}{2}(P_{\text{cls}} + P_{\text{dist}})" /> pour les 3 classes :
                       </p>
                       <div className="result-cells-row">
-                        <span>P₁ = </span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          className="cell-input"
-                          value={step7Inputs.pFinal1}
-                          onChange={(e) => setStep7Inputs({ ...step7Inputs, pFinal1: e.target.value })}
-                          placeholder="0.70"
-                        />
-                        <span>P₂ = </span>
-                        <input
-                          type="number"
-                          step="0.001"
-                          className="cell-input"
-                          value={step7Inputs.pFinal2}
-                          onChange={(e) => setStep7Inputs({ ...step7Inputs, pFinal2: e.target.value })}
-                          placeholder="0.225"
-                        />
+                        {['P_f₁ = ', 'P_f₂ = ', 'P_f₃ = '].map((label, i) => {
+                          const keys = ['pFinalPaper1', 'pFinalPaper2', 'pFinalPaper3'] as const;
+                          return (
+                            <React.Fragment key={i}>
+                              <span>{label}</span>
+                              <input type="number" step="0.001" className="cell-input"
+                                value={step7Inputs[keys[i]]}
+                                onChange={(e) => setStep7Inputs({ ...step7Inputs, [keys[i]]: e.target.value })}
+                                placeholder="?" />
+                            </React.Fragment>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : (
                     <div className="vit-head-notice-box">
-                      <span className="notice-pill">Architecture ViT (Tête Unique [CLS])</span>
+                      <span className="notice-pill">Architecture ViT — Tête unique [CLS]</span>
                       <p className="desc-text">
-                        Dans Google ViT, la décision finale repose à <strong>100% sur le token [CLS]</strong> : <InlineMath math="\hat{y} = \operatorname{argmax}_i P(y=i) = 1" /> (classe 1 gagne avec ~66.5% de confiance).
-                        Il n'y a pas de token [DIST] ni de seconde tête de distillation. Pour vous entraîner sur la fusion de distillation, sélectionnez <strong>DeiT</strong> dans le sélecteur d'architecture.
+                        Dans Google ViT, la décision finale repose à <strong>100% sur le token [CLS]</strong>.
+                        Il n'y a pas de token [DIST] ni de seconde tête. Pour explorer la distillation, basculez sur <strong>DeiT</strong>.
                       </p>
                     </div>
                   )}
@@ -1721,14 +1888,12 @@ export function TheoreticalCalculations() {
 
                 <div className="exercise-action-buttons">
                   <button type="button" className="btn-verify-answer" onClick={verifyStep7}>
-                    <CheckCircle2 size={16} />
-                    <span>Vérifier ma réponse</span>
+                    <CheckCircle2 size={16} /><span>Vérifier ma réponse</span>
                   </button>
-                  <button
-                    type="button"
-                    className="btn-toggle-solution"
-                    onClick={() => setSolutionVisible({ ...solutionVisible, 7: !solutionVisible[7] })}
-                  >
+                  <button type="button" className="btn-toggle-hint" onClick={() => showNextHint(7)}>
+                    <HelpCircle size={15} /><span>Indice {hintLevels[7] ? `(${hintLevels[7]}/3)` : ''}</span>
+                  </button>
+                  <button type="button" className="btn-toggle-solution" onClick={() => setSolutionVisible({ ...solutionVisible, 7: !solutionVisible[7] })}>
                     <span>{solutionVisible[7] ? 'Masquer' : 'Voir la solution'}</span>
                   </button>
                 </div>
@@ -1739,30 +1904,124 @@ export function TheoreticalCalculations() {
                     <span>{step7Feedback.message}</span>
                   </div>
                 )}
+
+                {hintLevels[7] >= 1 && (
+                  <div className="hint-collapsible-box">
+                    <strong>Indice {hintLevels[7]} :</strong>{' '}
+                    {hintLevels[7] === 1 && 'exp(2.0) = e² ≈ 7.389, exp(1.0) ≈ 2.718, exp(0) = 1.'}
+                    {hintLevels[7] === 2 && `Σexp = ${step7Ref.softmaxCls.sumExp.toFixed(3)}, P₁ = 7.389 / ${step7Ref.softmaxCls.sumExp.toFixed(3)} ≈ ${step7Ref.softmaxCls.probs[0].toFixed(3)}.`}
+                    {hintLevels[7] >= 3 && selectedModel === 'deit'
+                      ? `P_cls=[${step7Ref.softmaxCls.probs.map(v=>v.toFixed(3)).join(', ')}], P_dist=[${step7Ref.softmaxDist.probs.map(v=>v.toFixed(3)).join(', ')}]. Fusion: [${step7Ref.pFinalPaper.map(v=>v.toFixed(3)).join(', ')}].`
+                      : `P₁≈${step7Ref.softmaxCls.probs[0].toFixed(3)} (classe 1 gagne, 1-indexé).`}
+                  </div>
+                )}
+
+                {solutionVisible[7] && (
+                  <div className="solution-collapsible-box">
+                    <h4>Correction complète :</h4>
+                    <p><InlineMath math={`e^2 = ${step7Ref.softmaxCls.exps[0].toFixed(3)},\\; e^1 = ${step7Ref.softmaxCls.exps[1].toFixed(3)},\\; e^0 = 1.000`} /></p>
+                    <p><InlineMath math={`\\Sigma = ${step7Ref.softmaxCls.sumExp.toFixed(3)},\\; P_1 = ${step7Ref.softmaxCls.probs[0].toFixed(3)}`} /></p>
+                    {selectedModel === 'deit' && (
+                      <>
+                        <p><strong>z_dist=[1,3,0] :</strong></p>
+                        <p><InlineMath math={`P_{\\text{dist}} = [${step7Ref.softmaxDist.probs.map(v=>v.toFixed(3)).join(',\\; ')}]`} /></p>
+                        <p><InlineMath math={`P_{\\text{final}} = [${step7Ref.pFinalPaper.map(v=>v.toFixed(3)).join(',\\; ')}]`} /> → classe {step7Ref.winnerPaper}</p>
+                        <p style={{ fontSize: '11px', color: '#6d28d9', marginTop: '8px' }}>
+                          <strong>Variante HuggingFace</strong> (moyenne des logits) : softmax([1.5, 2, 0]) ≈ [{step7Ref.pFinalHF.map(v=>v.toFixed(3)).join(', ')}] → classe {step7Ref.winnerHF} (même gagnant ici).
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* DeiT: Distillation Loss section */}
+                {selectedModel === 'deit' && (
+                  <div style={{
+                    marginTop: '14px',
+                    background: '#faf5ff',
+                    border: '1px solid #c4b5fd',
+                    borderRadius: '8px',
+                    padding: '12px 14px',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                      <BookOpen size={15} style={{ color: '#6d28d9' }} />
+                      <strong style={{ fontSize: '12px', color: '#4c1d95' }}>Perte de distillation (lecture seule)</strong>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#5b21b6', lineHeight: '1.6' }}>
+                      <BlockMath math="\mathcal{L} = \tfrac{1}{2}\,\text{CE}\!\left(\psi(Z_{\text{cls}}),\, y\right) + \tfrac{1}{2}\,\text{CE}\!\left(\psi(Z_{\text{dist}}),\, y_t\right)" />
+                      <p>y = vrai label (supervision ImageNet). <strong>y_t = argmax</strong> du logit de l'enseignant CNN (RegNetY-16GF dans le papier).</p>
+                      <p><strong>[CLS]</strong> apprend des vrais labels humains. <strong>[DIST]</strong> imite les décisions de l'enseignant.</p>
+                      <p style={{ fontSize: '11px', color: '#7c3aed', marginTop: '4px' }}>
+                        Version douce (température τ) : remplacer CE par KL-divergence entre softmax(Z_dist/τ) et softmax(z_teacher/τ).
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
+              {/* Visual: dual-branch recap */}
               <div className="lab-panel-box visual-panel">
                 <div className="panel-navy-header">
                   <span className="panel-num-circle">★</span>
-                  <span className="panel-header-title">Récapitulatif End-to-End</span>
+                  <span className="panel-header-title">Pipeline End-to-End</span>
                 </div>
-                <div className="pipeline-recap-vertical">
-                  <div className="recap-node">Image brute (224×224×3)</div>
-                  <div className="recap-arr">↓</div>
-                  <div className="recap-node">196 patches (16×16)</div>
-                  <div className="recap-arr">↓</div>
-                  <div className="recap-node">Projection linéaire (768D)</div>
-                  <div className="recap-arr">↓</div>
-                  <div className="recap-node">Tokens [CLS] + [DIST] + Position</div>
-                  <div className="recap-arr">↓</div>
-                  <div className="recap-node">12 Blocs Pre-LN Transformer</div>
-                  <div className="recap-arr">↓</div>
-                  <div className="recap-node highlight">Classification finale ImageNet (1000 classes)</div>
+                <div style={{ padding: '12px 10px' }}>
+                  <PipelineRecap model={selectedModel as 'vit' | 'deit'} />
+
+                  {/* DeiT variante HF comparison */}
+                  {selectedModel === 'deit' && (
+                    <div style={{
+                      marginTop: '14px',
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '10px',
+                    }}>
+                      <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '10px' }}>
+                        <div style={{ fontSize: '11px', fontWeight: '700', color: '#1e40af', marginBottom: '4px' }}>Fusion papier DeiT</div>
+                        <div style={{ fontSize: '10.5px', color: '#1e40af' }}>
+                          P_final = ½(P_cls + P_dist)
+                          <br/>[{step7Ref.pFinalPaper.map(v=>`${(v*100).toFixed(1)}%`).join(', ')}]
+                          <br/><strong>Classe {step7Ref.winnerPaper}</strong>
+                        </div>
+                      </div>
+                      <div style={{ background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: '8px', padding: '10px' }}>
+                        <div style={{ fontSize: '11px', fontWeight: '700', color: '#6d28d9', marginBottom: '4px' }}>Variante HuggingFace</div>
+                        <div style={{ fontSize: '10.5px', color: '#6d28d9' }}>
+                          softmax((z_cls + z_dist)/2)
+                          <br/>[{step7Ref.pFinalHF.map(v=>`${(v*100).toFixed(1)}%`).join(', ')}]
+                          <br/><strong>Classe {step7Ref.winnerHF}</strong>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           </div>
         )}
+
+      </div>
+
+      {/* ── NAV FOOTER ── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px' }}>
+        <button
+          type="button"
+          className="btn-studio-secondary"
+          onClick={() => setCurrentStep(Math.max(1, currentStep - 1))}
+          disabled={currentStep === 1}
+          style={{ opacity: currentStep === 1 ? 0.4 : 1 }}
+        >
+          <ArrowLeft size={16} /><span>Étape précédente</span>
+        </button>
+        <button
+          type="button"
+          className="btn-verify-answer"
+          onClick={() => setCurrentStep(Math.min(7, currentStep + 1))}
+          disabled={currentStep === 7}
+          style={{ opacity: currentStep === 7 ? 0.4 : 1 }}
+        >
+          <span>Étape suivante</span><ArrowRight size={16} />
+        </button>
       </div>
     </div>
   );
